@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage, dialog, session, desktopCapturer, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage, dialog, session, desktopCapturer, safeStorage, globalShortcut } = require('electron');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
@@ -157,7 +157,7 @@ ipcMain.handle('screen:prepare', (_event, sel) => {
 // ---------- preferências do app e bandeja do sistema ----------
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 function readSettings() {
-  const defaults = { closeToTray: true, autoStart: false };
+  const defaults = { closeToTray: true, autoStart: false, globalShortcuts: false };
   try {
     return { ...defaults, ...JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) };
   } catch {
@@ -169,11 +169,27 @@ function writeSettings(next) {
   const merged = {
     closeToTray: typeof next.closeToTray === 'boolean' ? next.closeToTray : cur.closeToTray,
     autoStart: typeof next.autoStart === 'boolean' ? next.autoStart : cur.autoStart,
+    globalShortcuts: typeof next.globalShortcuts === 'boolean' ? next.globalShortcuts : cur.globalShortcuts,
   };
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(merged));
+  applyGlobalShortcuts(merged.globalShortcuts);
   if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: merged.autoStart, args: merged.autoStart ? ['--hidden'] : [] });
   return merged;
+}
+// Atalhos que funcionam mesmo com o Concordo em segundo plano (desligados por padrão, para não brigar com outros apps).
+const SHORTCUTS = { 'CommandOrControl+Shift+M': 'mute', 'CommandOrControl+Shift+D': 'deafen' };
+function applyGlobalShortcuts(on) {
+  if (!app.isReady()) return;
+  try {
+    globalShortcut.unregisterAll();
+    if (!on) return;
+    for (const [accel, action] of Object.entries(SHORTCUTS)) {
+      globalShortcut.register(accel, () => send('shortcut', action)); // se outro app já usa a combinação, o registro simplesmente falha
+    }
+  } catch {
+    /* sem atalhos globais neste sistema */
+  }
 }
 ipcMain.handle('app:show-window', () => showWindow());
 
@@ -830,6 +846,7 @@ if (!app.requestSingleInstanceLock()) {
       app.setAsDefaultProtocolClient(PROTOCOL);
     }
     setupMedia();
+    applyGlobalShortcuts(readSettings().globalShortcuts);
     setupTray();
     createWindow();
     setupUpdater();
@@ -845,6 +862,11 @@ if (!app.requestSingleInstanceLock()) {
   let cleaningUp = false;
   app.on('before-quit', (event) => {
     quitting = true;
+    try {
+      globalShortcut.unregisterAll();
+    } catch {
+      /* ignora */
+    }
     if (cleaningUp || !hosts.size) return;
     event.preventDefault();
     cleaningUp = true;

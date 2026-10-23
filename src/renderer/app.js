@@ -2289,6 +2289,7 @@
     if (v.client !== client) return;
     const st = client.state();
     if (!st.hasMic) toast(st.micError || 'Sem microfone: você só vai ouvir.', 'error');
+    pttApply();
     scheduleVoiceRender();
   }
 
@@ -2388,10 +2389,24 @@
       video,
       h('div', { class: 'tile-avatar' }),
       h('div', { class: 'tile-label' }),
-      h('button', { class: 'tile-full', title: 'Tela cheia', onclick: (e) => {
-        e.stopPropagation();
-        if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
-      } }, ico('maximize', 16)));
+      h('div', { class: 'tile-tools' },
+        h('button', { class: 'tile-fit', title: 'Preencher o quadro (pode cortar as bordas)', 'aria-label': 'Alternar entre tela inteira e preencher', onclick: (e) => {
+          e.stopPropagation();
+          tile.classList.toggle('fill');
+        } }, ico('fit', 16)),
+        document.pictureInPictureEnabled ? h('button', { class: 'tile-pip', title: 'Janela flutuante (fica por cima de outros apps)', 'aria-label': 'Janela flutuante', onclick: async (e) => {
+          e.stopPropagation();
+          try {
+            if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+            else await video.requestPictureInPicture();
+          } catch {
+            toast('Não consegui abrir a janela flutuante para este vídeo.', 'error');
+          }
+        } }, ico('pip', 16)) : null,
+        h('button', { class: 'tile-full', title: 'Tela cheia', 'aria-label': 'Tela cheia', onclick: (e) => {
+          e.stopPropagation();
+          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
+        } }, ico('maximize', 16))));
     v.tiles.set(key, tile);
     return tile;
   }
@@ -2572,20 +2587,81 @@
     if (!ev.target.closest || !ev.target.closest('.ctx-menu')) closeContextMenu();
   });
   window.addEventListener('blur', closeContextMenu);
+  function toggleMute() {
+    const c = S.voice.client;
+    if (!c) return;
+    sfx(c.state().muted ? 'unmute' : 'mute');
+    c.setMuted(!c.state().muted);
+  }
+  function toggleDeafen() {
+    const c = S.voice.client;
+    if (!c) return;
+    sfx(c.state().deafened ? 'undeafen' : 'deafen');
+    c.setDeafened(!c.state().deafened);
+  }
+
+  // Apertar para falar: segure a tecla para o microfone abrir; ao soltar ele fecha de novo.
+  // Funciona com a janela do Concordo em foco (um app não vê teclas de outros programas sem um gancho nativo).
+  const pttCfg = () => {
+    const p = vprefs().ptt || {};
+    return { on: !!p.on, code: p.code || 'KeyV' };
+  };
+  const keyName = (code) => String(code).replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num ').replace('Backquote', '`');
+  const ptt = { held: false, timer: null };
+  const typingTarget = (t) => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  function pttSilence() {
+    clearTimeout(ptt.timer);
+    ptt.timer = null;
+    ptt.held = false;
+    const c = S.voice.client;
+    if (c && pttCfg().on && !c.state().muted) c.setMuted(true);
+  }
+  function pttApply() {
+    const c = S.voice.client;
+    if (c && pttCfg().on && !ptt.held && !c.state().muted) c.setMuted(true); // PTT ligado: começa mudo
+  }
+  window.addEventListener('blur', () => {
+    if (ptt.held) pttSilence();
+  });
+  document.addEventListener('keyup', (ev) => {
+    const cfg = pttCfg();
+    if (!cfg.on || ev.code !== cfg.code || !ptt.held) return;
+    clearTimeout(ptt.timer);
+    ptt.timer = setTimeout(pttSilence, 250); // pequena folga para não cortar o fim da frase
+  });
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') closeContextMenu();
     const c = S.voice.client;
-    if (!c || !ev.ctrlKey || !ev.shiftKey) return;
+    if (!c) return;
+    const cfg = pttCfg();
+    if (cfg.on && ev.code === cfg.code && !ev.ctrlKey && !ev.altKey && !ev.metaKey && !typingTarget(ev.target)) {
+      ev.preventDefault();
+      if (ev.repeat) return;
+      clearTimeout(ptt.timer);
+      ptt.timer = null;
+      if (!ptt.held) {
+        ptt.held = true;
+        if (c.state().muted && !c.state().deafened) {
+          c.setMuted(false);
+        }
+      }
+      return;
+    }
+    if (!ev.ctrlKey || !ev.shiftKey) return;
     if (ev.code === 'KeyM') {
       ev.preventDefault();
-      sfx(c.state().muted ? 'unmute' : 'mute');
-      c.setMuted(!c.state().muted);
+      toggleMute();
     } else if (ev.code === 'KeyD') {
       ev.preventDefault();
-      sfx(c.state().deafened ? 'undeafen' : 'deafen');
-      c.setDeafened(!c.state().deafened);
+      toggleDeafen();
     }
   });
+  if (bridge.on) {
+    bridge.on('shortcut', (action) => {
+      if (action === 'mute') toggleMute();
+      else if (action === 'deafen') toggleDeafen();
+    });
+  }
 
   // Campos de qualidade da transmissão (usados no seletor de tela e nas configurações).
   function qualityFields(kind) {
@@ -2750,6 +2826,30 @@
         toast(e.message, 'error');
       }
     };
+    const pttBox = h('input', { type: 'checkbox', 'data-role': 'ptt-on' });
+    pttBox.checked = pttCfg().on;
+    const pttKey = h('button', { class: 'btn small', 'data-role': 'ptt-key', type: 'button' }, 'Tecla: ' + keyName(pttCfg().code));
+    pttBox.addEventListener('change', () => {
+      const p = vprefs();
+      p.ptt = { on: pttBox.checked, code: pttCfg().code };
+      saveVprefs(p);
+      if (pttBox.checked) pttApply();
+    });
+    pttKey.addEventListener('click', () => {
+      pttKey.textContent = 'Aperte a tecla…';
+      const onKey = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        document.removeEventListener('keydown', onKey, true);
+        if (ev.code !== 'Escape') {
+          const p = vprefs();
+          p.ptt = { on: pttCfg().on, code: ev.code };
+          saveVprefs(p);
+        }
+        pttKey.textContent = 'Tecla: ' + keyName(pttCfg().code);
+      };
+      document.addEventListener('keydown', onKey, true);
+    });
     mic.addEventListener('change', () => change({ mic: mic.value || null }, 'mic'));
     cam.addEventListener('change', () => change({ cam: cam.value || null }, 'cam'));
     out.addEventListener('change', () => change({ out: out.value || null }, 'out'));
@@ -2773,6 +2873,10 @@
       check('echo', 'Cancelamento de eco', 'opt-echo'),
       check('noise', 'Supressão de ruído', 'opt-noise'),
       check('agc', 'Ajuste automático de volume do microfone', 'opt-agc'),
+      h('label', { class: 'check' }, pttBox, h('span', null, 'Apertar para falar (o microfone só abre enquanto você segura a tecla)')),
+      h('div', { class: 'field' }, pttKey),
+      h('p', { class: 'hint' }, 'Apertar para falar vale com a janela do Concordo em foco. Para mutar de qualquer lugar, ligue os atalhos globais abaixo.'),
+      appCheck('globalShortcuts', 'Atalhos globais: Ctrl+Shift+M muta e Ctrl+Shift+D ensurdece, mesmo em outro programa'),
       h('h4', { class: 'sub' }, 'Câmera: qualidade'),
       ...qualityFields('cam'),
       h('h4', { class: 'sub' }, 'Compartilhamento de tela: qualidade'),

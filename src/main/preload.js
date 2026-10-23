@@ -2,7 +2,7 @@
 // Ponte segura entre a interface e o processo principal.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = new Set(['host:status', 'update:status', 'deeplink', 'backup:status', 'host:superseded']);
+const EVENTS = new Set(['host:status', 'update:status', 'deeplink', 'backup:status', 'host:superseded', 'shortcut']);
 
 contextBridge.exposeInMainWorld('concordo', {
   appInfo: () => ipcRenderer.invoke('app:info'),

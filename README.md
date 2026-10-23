@@ -217,3 +217,9 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Transmissão de tela sem cortes**: a tela em destaque passava da altura da janela e o fundo era cortado; agora ela sempre aparece inteira (com barras pretas quando a proporção for outra), tanto em destaque quanto na grade e nas miniaturas. Zoom e arrastar para escolher uma parte ficam como ideia futura (tela cheia continua).
 - **Indicador de internet e disco** no canto da barra lateral (`↓ 12 KB/s ↑ 3 KB/s · 38 MB em disco`). Clique para ver sessão, hoje e mês por tipo (mensagens e arquivos, voz/vídeo/tela, servidor das salas que você hospeda) e o disco por sala. Dá para ocultar ali ou em Configurações. Os números são estimativas do que o app contou: o tráfego do Windows tem cabeçalhos extras, atualizações e o túnel.
 - **Anexos nas cópias**: nas Configurações dá para escolher guardar nas cópias das salas todos os anexos, só até 10 MB (padrão) ou nenhum. Mensagens e metadados sempre vêm; só os arquivos grandes deixam de ser baixados (menos disco e menos internet do host).
+
+## v0.14.0
+
+- **Apertar para falar**: em Configurações → Áudio, ligue "Apertar para falar" e escolha a tecla (padrão V). Com isso você entra na chamada mudo e o microfone só abre enquanto segura a tecla (com 0,25 s de folga ao soltar, para não cortar o fim da frase). Não dispara enquanto você digita num campo. Vale com a janela do Concordo em foco: ver teclas de outros programas exigiria um gancho nativo do Windows, que fica de fora por enquanto.
+- **Atalhos globais** (desligados por padrão, para não brigar com outros apps): Ctrl+Shift+M muta e Ctrl+Shift+D ensurdece mesmo com outro programa em primeiro plano.
+- **Tela compartilhada**: botão de janela flutuante (fica por cima de outros apps) e botão para alternar entre mostrar inteira e preencher o quadro. Tela cheia continua. Supressão de ruído e qualidade da tela (resolução, quadros, taxa) já existiam nas Configurações.
