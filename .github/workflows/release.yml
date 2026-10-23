@@ -1,0 +1,40 @@
+name: Release
+
+# Publica uma nova versão do Concordo sempre que você envia uma tag "v*" (ex.: v0.1.0).
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Rodar testes
+        run: npm test
+
+      # O túnel usa o cloudflared; embutimos o executável no instalador.
+      - name: Baixar cloudflared
+        shell: bash
+        run: |
+          mkdir -p build/bin
+          curl -fL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o build/bin/cloudflared.exe
+          ls -l build/bin
+
+      - name: Gerar instalador e publicar a Release
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
