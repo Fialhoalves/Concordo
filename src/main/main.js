@@ -294,7 +294,55 @@ function setTunnelState(state, message = '') {
   send('host:status', { state, message, publicUrl: host.publicUrl });
 }
 
+// "A sala está de pé?": pergunta ao endereço se ele responde e é a mesma sala.
+async function pingRoom(url, roomId) {
+  if (!isHttpUrl(url)) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);
+  try {
+    const r = await fetch(`${url.replace(/\/+$/, '')}/api/ping`, { signal: ctl.signal });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j.app !== 'concordo' || (roomId && j.roomId !== roomId)) return null;
+    return j;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Lê o ponto de encontro e vê se alguém está mesmo respondendo lá.
+async function lookPointer(rv, roomId) {
+  if (!rv) return null;
+  let p = null;
+  try {
+    p = await rendezvous.resolve(rv);
+  } catch {
+    return null;
+  }
+  if (!p) return null;
+  const info = await pingRoom(p.url, roomId);
+  return { ...p, alive: !!info, host: (info && info.host) || p.n || null, epoch: info && Number.isInteger(info.epoch) ? info.epoch : p.e };
+}
+
+// Quem manda quando dois hosts existem ao mesmo tempo: maior geração; na igualdade, o menor id de dono.
+function losesTo(mine, other) {
+  if (other.epoch !== mine.epoch) return other.epoch > mine.epoch;
+  return !!other.o && other.o !== mine.owner && other.o < mine.owner;
+}
+
+async function supersede(current, pointer) {
+  if (host !== current) return;
+  host = null;
+  if (current.watch) clearInterval(current.watch);
+  if (current.tunnel) current.tunnel.stop();
+  await current.server.close().catch(() => {});
+  send('host:superseded', { url: pointer.url, host: pointer.host, epoch: pointer.epoch });
+}
+
 // Publica o endereço atual da sala no ponto de encontro (em segundo plano; falhar não atrapalha nada).
+// Antes, confere se outro host já está de pé com geração maior: nesse caso este host se rende e vira membro.
 async function publishAddress(current) {
   const store = current.server.store;
   const attempt = async () => {
@@ -304,7 +352,17 @@ async function publishAddress(current) {
       store.setRendezvous(rv);
     }
     if (host !== current || !current.publicUrl) return;
-    await rendezvous.publish(rv, current.publicUrl);
+    const other = await lookPointer(rendezvous.format(rv), store.room.id);
+    if (other && other.url !== current.publicUrl) {
+      if (other.alive && losesTo({ epoch: store.epoch, owner: current.owner.id }, other)) {
+        await supersede(current, other);
+        return;
+      }
+      if (!other.alive && other.e >= store.epoch) store.bumpEpoch(other.e); // o host dessa geração sumiu: eu assumo uma acima
+    }
+    if (host !== current || !current.publicUrl) return;
+    await rendezvous.publish(rv, current.publicUrl, { epoch: store.epoch, owner: current.owner.id, ownerName: current.owner.name });
+    watchPointer(current, rv);
   };
   for (const wait of [0, 8000, 30000]) {
     if (wait) await new Promise((r) => setTimeout(r, wait));
@@ -316,6 +374,20 @@ async function publishAddress(current) {
       console.warn('[concordo] ponto de encontro:', e.message);
     }
   }
+}
+
+// Enquanto hospeda, vigia o ponteiro: se aparecer um host mais novo (ex.: o sucessor assumiu enquanto eu estava sem rede),
+// este vira membro em vez de manter uma sala paralela.
+function watchPointer(current, rv) {
+  if (current.watch) clearInterval(current.watch);
+  const tick = async () => {
+    if (host !== current || !current.publicUrl) return;
+    const other = await lookPointer(rendezvous.format(rv), current.server.store.room.id);
+    if (host !== current || !other || other.url === current.publicUrl || !other.alive) return;
+    if (losesTo({ epoch: current.server.store.epoch, owner: current.owner.id }, other)) await supersede(current, other);
+  };
+  current.watch = setInterval(tick, 40000);
+  if (current.watch.unref) current.watch.unref();
 }
 
 async function openTunnel() {
@@ -369,11 +441,12 @@ async function stopHost() {
   if (current.server.announceLeaving) await current.server.announceLeaving().catch(() => {});
   if (host !== current) return;
   host = null;
+  if (current.watch) clearInterval(current.watch);
   if (current.tunnel) current.tunnel.stop();
   await current.server.close().catch(() => {});
 }
 
-async function startHost({ dataDir, roomName, ownerName, takeoverUserId, takeoverToken }) {
+async function startHost({ dataDir, roomName, ownerName, takeoverUserId, takeoverToken, minEpoch }) {
   const fixed = readFixedConfig();
   let server;
   try {
@@ -384,6 +457,7 @@ async function startHost({ dataDir, roomName, ownerName, takeoverUserId, takeove
       ownerName,
       takeoverUserId,
       takeoverToken,
+      minEpoch,
       getPublicUrl: () => (host ? host.publicUrl : null),
       version: app.getVersion(),
       iceServers: iceFromEnv(),
@@ -480,16 +554,75 @@ ipcMain.handle('backup:status', (_event, roomId) => {
   return backup.describe(backupDir(roomId));
 });
 
+// Lê o ponteiro da sala guardado na cópia (a chave é a mesma que todo membro já conhece).
+function copyPointer(roomId) {
+  try {
+    const st = JSON.parse(fs.readFileSync(path.join(backupDir(roomId), 'state.json'), 'utf8'));
+    return st.rendezvous ? rendezvous.format(st.rendezvous) : '';
+  } catch {
+    return '';
+  }
+}
+
 // O sucessor assume a sala a partir da cópia local: vira o dono e abre um túnel novo.
+// Se a sala já está de pé em outro computador, não abre uma segunda: devolve o endereço para entrar nela.
 ipcMain.handle('backup:takeover', async (_event, args = {}) => {
   if (host) throw new Error('Você já está hospedando uma sala.');
   if (!roomIdOk(args.roomId) || typeof args.userId !== 'string') throw new Error('Dados inválidos.');
   const dir = backupDir(args.roomId);
-  if (!backup.describe(dir)) throw new Error('Ainda não há cópia desta sala neste computador.');
-  stopBackup(args.roomId);
+  const mine = backup.describe(dir);
+  if (!mine) throw new Error('Ainda não há cópia desta sala neste computador.');
   if (typeof args.token !== 'string' || !args.token) throw new Error('Dados inválidos.');
-  await startHost({ dataDir: dir, takeoverUserId: args.userId, takeoverToken: args.token });
+  const other = await lookPointer(copyPointer(args.roomId), args.roomId);
+  if (other && other.alive && !args.force) return { online: true, url: other.url, host: other.host, epoch: other.epoch };
+  stopBackup(args.roomId);
+  await startHost({
+    dataDir: dir,
+    takeoverUserId: args.userId,
+    takeoverToken: args.token,
+    minEpoch: Math.max(mine.epoch || 1, other ? other.e || 0 : 0),
+  });
   return hostSnapshot();
+});
+
+// Salas que este computador tem guardadas (cópias) e o estado de cada uma agora.
+ipcMain.handle('backup:list', () => {
+  const root = path.join(app.getPath('userData'), 'backups');
+  let names = [];
+  try {
+    names = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  return names.filter(roomIdOk).map((id) => backup.describe(path.join(root, id))).filter(Boolean);
+});
+
+// "A sala está aberta?" para uma lista de salas ({ roomId, rv, url }).
+ipcMain.handle('rooms:status', async (_event, list = []) => {
+  const jobs = (Array.isArray(list) ? list : []).slice(0, 20).map(async (r) => {
+    if (!roomIdOk(r.roomId)) return { roomId: r.roomId, state: 'unknown' };
+    if (host && host.server.store.room.id === r.roomId) return { roomId: r.roomId, state: 'online', url: host.publicUrl, host: host.owner.name, mine: true };
+    const p = await lookPointer(typeof r.rv === 'string' ? r.rv : copyPointer(r.roomId), r.roomId);
+    if (p && p.alive) return { roomId: r.roomId, state: 'online', url: p.url, host: p.host, epoch: p.epoch };
+    // sem ponteiro: tenta o último endereço conhecido
+    if (isHttpUrl(r.url)) {
+      const info = await pingRoom(r.url, r.roomId);
+      if (info) return { roomId: r.roomId, state: 'online', url: r.url, host: info.host || null, epoch: info.epoch };
+    }
+    return { roomId: r.roomId, state: 'offline' };
+  });
+  return Promise.all(jobs);
+});
+
+// Devolve ao host o que só a minha cópia tem (mensagens, anexos, usuários); roda ao entrar numa sala.
+ipcMain.handle('backup:reconcile', async (_event, args = {}) => {
+  if (!roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return null;
+  if (host && host.server.store.room.id === args.roomId) return null;
+  try {
+    return await backup.reconcile({ dir: backupDir(args.roomId), url: args.url, token: args.token });
+  } catch (e) {
+    return { error: e.message };
+  }
 });
 
 ipcMain.handle('rendezvous:resolve', async (_event, rv) => {

@@ -506,3 +506,12 @@ a { color: var(--concordo-violet-light); }
 .empty.small { padding: 16px 12px; }
 .lobby-card .mascot { margin: 0 auto 4px; }
 .source .app-icon, .source-preview .app-icon { width: 16px; height: 16px; border-radius: 3px; }
+
+/* ---- estado das salas na tela inicial ---- */
+.room-status { font-size: 12px; margin-top: 2px; color: var(--color-text-muted); display: flex; align-items: center; gap: 6px; }
+.room-status::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .6; }
+.room-status[data-state='online'] { color: var(--color-online); }
+.room-status[data-state='online']::before { opacity: 1; }
+.room-status[data-state='checking']::before { animation: rs-pulse 1s ease-in-out infinite; }
+@keyframes rs-pulse { 50% { opacity: .2; } }
+.saved-item .row { flex-wrap: wrap; justify-content: flex-end; }

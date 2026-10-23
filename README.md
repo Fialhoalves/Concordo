@@ -188,3 +188,14 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 - **Todos guardam cópia:** cada membro mantém, em segundo plano, uma cópia da sala (mensagens, arquivos e membros) no próprio computador. As cópias **não levam tokens nem convites**: ninguém consegue se passar por outro membro com a cópia. Se o host sair, assume quem tem cópia e vem primeiro na ordem de sucessão (quem entrou antes); os demais esperam um pouco e só assumem se ninguém publicou o endereço novo. Dá para desligar em Configurações (a cópia usa disco).
 - **Voz:** indicador de qualidade de conexão por pessoa (ping e perda de pacotes), destaque animado de quem está falando e seletor de tela em duas etapas (abas Telas/Janelas, prévia ao vivo, ícone do app).
 - **Mascote:** na boas-vindas, nos estados vazios e como ícone do app (instalador, janela e bandeja).
+
+## v0.11.0
+
+Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já está aberta.
+
+- **Identidade da sala**: é um ID aleatório (vai no convite), nunca o nome. Duas salas com o mesmo nome são independentes e não se misturam.
+- **Geração (epoch)**: cada vez que alguém assume ou reabre a sala, a geração sobe. O host antigo que voltar com geração menor percebe pelo ponto de encontro e entra como membro, em vez de manter uma sala paralela. Se dois reabrirem ao mesmo tempo, vence a maior geração e, na igualdade, o menor id de dono.
+- **Linha do tempo**: o arquivo de mensagens ganha uma "linha do tempo" nova a cada troca de host; cópias antigas baixam tudo de novo em vez de emendar bytes de arquivos diferentes. Uma cópia nunca é sobrescrita por um host de geração menor.
+- **Junção por ID**: ao entrar numa sala reaberta de uma cópia mais velha, o app devolve ao host o que só a sua cópia tem (mensagens, usuários, canais, edições, anexos). Mensagens têm ID único, então nada duplica nem some. Quem foi removido não ressuscita.
+- **Suas salas**: a tela inicial mostra se cada sala está aberta ("hospedada por fulano") ou fechada, e oferece **Reabrir com a minha cópia (há 3 dias)**. Antes de abrir, o app espera alguns segundos e confere o ponto de encontro: se alguém já abriu, você entra nessa sala.
+- Limites: sem votação, dois membros podem abrir a sala no mesmo instante; a sala se corrige sozinha em segundos e as mensagens dos dois lados são juntadas. As mensagens ainda não são assinadas (próxima versão): a junção confia nos membros da sala.

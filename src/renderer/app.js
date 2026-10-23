@@ -283,17 +283,24 @@
     teardownChat();
     const rooms = Object.values(getRooms()).sort((a, b) => b.savedAt - a.savedAt);
 
+    const rows = new Map(); // roomId -> { status, enter, reopen, note }
     const savedList = rooms.length
       ? h('div', { class: 'saved' },
           h('h4', null, 'Suas salas'),
           rooms.map((r) => {
             const enter = h('button', { class: 'btn small primary' }, 'Entrar');
             enter.addEventListener('click', () => reconnect(r, enter));
+            const status = h('div', { class: 'room-status', 'data-state': 'checking' }, 'verificando…');
+            const reopen = h('button', { class: 'btn small primary', 'data-act': 'reopen', hidden: true }, 'Reabrir com a minha cópia');
+            const note = h('div', { class: 'hint', hidden: true });
+            rows.set(r.roomId, { status, enter, reopen, note, room: r });
             return h('div', { class: 'saved-item' },
               h('div', null,
                 h('div', { class: 'name' }, r.roomName || 'Sala'),
-                h('div', { class: 'hint' }, `como ${r.name}`)),
+                h('div', { class: 'hint' }, `como ${r.name}`),
+                status, note),
               h('div', { class: 'row' },
+                reopen,
                 enter,
                 h('button', {
                   class: 'btn small ghost',
@@ -308,6 +315,39 @@
           }),
         )
       : null;
+
+    // Quais salas estão abertas agora e de quais eu tenho cópia para reabrir.
+    if (rooms.length && bridge.roomsStatus) {
+      Promise.all([
+        bridge.roomsStatus(rooms.map((r) => ({ roomId: r.roomId, rv: r.rv, url: r.url }))).catch(() => []),
+        bridge.backupList ? bridge.backupList().catch(() => []) : [],
+      ]).then(([states, copies]) => {
+        if (!rows.size || !document.body.contains(Array.from(rows.values())[0].status)) return; // saiu da tela
+        const copyOf = new Map((copies || []).map((c) => [c.roomId, c]));
+        for (const st of states || []) {
+          const row = rows.get(st.roomId);
+          if (!row) continue;
+          const copy = copyOf.get(st.roomId);
+          if (st.state === 'online') {
+            row.status.dataset.state = 'online';
+            row.status.textContent = st.mine ? 'aberta neste computador' : `aberta${st.host ? ' · hospedada por ' + st.host : ''}`;
+          } else {
+            row.status.dataset.state = 'offline';
+            row.status.textContent = 'fechada: ninguém está hospedando';
+            if (copy && row.room.userId && row.room.token) {
+              row.reopen.hidden = false;
+              row.reopen.textContent = `Reabrir com a minha cópia (${ago(copy.at)})`;
+              row.reopen.addEventListener('click', () => reopenRoom(row.room, row.reopen));
+              row.enter.className = 'btn small ghost';
+              row.enter.textContent = 'Tentar entrar';
+            } else {
+              row.note.hidden = false;
+              row.note.textContent = 'Sem cópia neste computador: espere alguém que tenha reabrir a sala.';
+            }
+          }
+        }
+      });
+    }
 
     const version = h('div', { class: 'version' });
     bridge.appInfo().then((i) => (version.textContent = `Concordo v${i.version}`));
@@ -354,6 +394,28 @@
           : 'A sala está offline ou mudou de endereço. Peça ao host um novo código de sessão e cole em "Entrar".', 'error');
         button.disabled = false;
       }
+    }
+  }
+
+  // Reabre a sala a partir da cópia local, mas só se ninguém já tiver aberto (o app confere o ponto de encontro).
+  async function reopenRoom(room, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Verificando se alguém já abriu…';
+    try {
+      await new Promise((r) => setTimeout(r, 4000)); // folga: se outro membro clicou junto, o endereço dele aparece
+      const info = await bridge.backupTakeover({ roomId: room.roomId, userId: room.userId, token: room.token });
+      if (info && info.online) {
+        toast(`${info.host || 'Alguém'} já abriu a sala. Entrando nela…`, 'ok');
+        const me = await request(info.url, room.token, 'GET', '/api/me');
+        return enterGuest({ url: info.url, token: room.token, user: me.user, room: me.room, rv: me.rv || room.rv });
+      }
+      S.afterTakeover = true;
+      enterHost(info);
+    } catch (e) {
+      toast(e.message, 'error');
+      button.disabled = false;
+      button.textContent = label;
     }
   }
 
@@ -1726,6 +1788,9 @@
 
   function onServerEvent(d) {
     switch (d.t) {
+      case 'resync':
+        refreshAfterReconnect(); // o host recebeu mensagens de uma cópia: recarrega o histórico
+        break;
       case 'msg':
         return onIncoming(d.message);
       case 'reaction':
@@ -1788,7 +1853,17 @@
   function syncBackup() {
     if (!bridge.backupStart || !S.session) return;
     if (!S.isHost && keepCopy()) {
-      bridge.backupStart({ url: S.session.url, token: S.session.token, roomId: S.session.room.id }).catch(() => {});
+      const args = { url: S.session.url, token: S.session.token, roomId: S.session.room.id };
+      const start = () => bridge.backupStart(args).catch(() => {});
+      if (bridge.backupReconcile && S.reconciledUrl !== args.url) {
+        // primeiro devolve ao host o que só a minha cópia tem (ele pode ter sido reaberto de uma cópia mais velha)
+        S.reconciledUrl = args.url;
+        bridge.backupReconcile(args).then((r) => {
+          if (r && r.added) toast(`${r.added} mensagem(ns) da sua cópia voltaram para a sala.`, 'ok');
+        }).catch(() => {}).finally(start);
+      } else {
+        start();
+      }
       bridge.backupStatus(S.session.room.id).then((info) => {
         if (info && !S.backup) S.backup = info;
         renderHeirNote();
@@ -1802,7 +1877,7 @@
   function ago(ts) {
     if (!ts) return 'ainda sem cópia';
     const min = Math.round((Date.now() - ts) / 60000);
-    return min < 1 ? 'agora há pouco' : min < 60 ? `${min} min atrás` : `${Math.round(min / 60)} h atrás`;
+    return min < 1 ? 'agora há pouco' : min < 60 ? `${min} min atrás` : min < 2880 ? `${Math.round(min / 60)} h atrás` : `${Math.round(min / 1440)} dias atrás`;
   }
 
   function renderHeirNote() {
@@ -1851,11 +1926,11 @@
         /* usa a última cópia que existir */
       }
       S.autoTakeover = true;
-      takeOverRoom({ auto: true });
+      takeOverRoom({ auto: true, force: true }); // o host avisou que está saindo: o endereço dele ainda responde, mas vai cair
     }
   }
 
-  async function takeOverRoom({ auto = false } = {}) {
+  async function takeOverRoom({ auto = false, force = false } = {}) {
     if (!auto && !confirm('Assumir a sala? Seu computador vira o servidor, com as mensagens e arquivos da última cópia, e você vira o dono. ' +
       'Depois, mande o novo código para o pessoal reconectar. Se o host original voltar, ele deve entrar na sua sala pelo código.')) return;
     const me = S.session.user.id;
@@ -1865,7 +1940,16 @@
         S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
         leaveVoice({ silent: true, local: true });
       }
-      const info = await bridge.backupTakeover({ roomId, userId: me, token: S.session.token });
+      const info = await bridge.backupTakeover({ roomId, userId: me, token: S.session.token, force });
+      if (info && info.online) {
+        // o host voltou (ou alguém já assumiu): não abre uma segunda sala, só entra nela
+        S.autoTakeover = false;
+        S.session.url = info.url;
+        saveRoom(S.session);
+        toast(`${info.host || 'Alguém'} já está hospedando a sala. Reconectando…`, 'ok');
+        S.retry = 0;
+        return openSocket();
+      }
       closeSocket();
       S.afterTakeover = !auto;
       enterHost(info);
@@ -2782,6 +2866,23 @@
       renderBanner();
     });
     bridge.on('deeplink', handleDeepLink);
+    // Outro computador já hospeda esta sala com uma geração mais nova: este deixa de ser host e entra como membro.
+    bridge.on('host:superseded', async (ev) => {
+      const s0 = S.session;
+      if (!S.isHost || !s0 || !ev || !ev.url) return;
+      const { token } = s0;
+      S.hosted = null;
+      teardownChat();
+      S.leaving = true;
+      try {
+        const me = await request(ev.url, token, 'GET', '/api/me');
+        toast(`${ev.host || 'Outro membro'} já está hospedando esta sala. Você entrou nela como membro.`, 'ok');
+        enterGuest({ url: ev.url, token, user: me.user, room: me.room, rv: me.rv });
+      } catch {
+        showWelcome();
+        toast('Outro computador assumiu a sala. Entre por "Suas salas".', 'error');
+      }
+    });
     bridge.on('backup:status', (ev) => {
       if (S.session && ev && ev.roomId === S.session.room.id) S.backup = ev;
       renderHeirNote();

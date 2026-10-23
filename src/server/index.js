@@ -94,6 +94,7 @@ async function createConcordoServer(opts = {}) {
     version = '0.0.0',
     takeoverUserId, // sucessor assumindo uma sala copiada: vira o dono
     takeoverToken, // token do próprio sucessor (as cópias não trazem tokens)
+    minEpoch = 0, // maior geração que o sucessor viu (no ponto de encontro); a nova fica acima dela
   } = opts;
   if (!dataDir) throw new Error('dataDir é obrigatório');
 
@@ -101,6 +102,7 @@ async function createConcordoServer(opts = {}) {
   if (roomName) store.setRoomName(cleanName(roomName, 40));
   if (takeoverUserId && !store.transferOwner(takeoverUserId)) throw new Error('usuário da cópia não encontrado');
   if (takeoverUserId && takeoverToken) store.adoptToken(takeoverUserId, takeoverToken);
+  if (takeoverUserId) store.bumpEpoch(minEpoch); // nova geração: o host antigo, se voltar, percebe e vira membro
   const owner = ownerName && !takeoverUserId ? store.ensureOwner(cleanName(ownerName)) : store.getOwner();
 
   const pub = (u) => store.publicUser(u);
@@ -268,7 +270,7 @@ async function createConcordoServer(opts = {}) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       return res.end();
@@ -284,6 +286,8 @@ async function createConcordoServer(opts = {}) {
         version,
         roomId: store.room.id,
         roomName: store.room.name,
+        epoch: store.epoch,
+        host: (store.getOwner() || {}).name || null,
       });
     }
 
@@ -384,10 +388,61 @@ async function createConcordoServer(opts = {}) {
     if (method === 'GET' && p === '/api/backup') {
       // qualquer membro pode manter uma cópia (sem tokens nem convites); ela só serve para assumir a sala
       const offset = parseInt(url.searchParams.get('offset'), 10) || 0;
-      if (parseInt(url.searchParams.get('rev'), 10) === store.rev && offset === store.messageBytes()) {
-        return sendJson(res, 200, { unchanged: true, rev: store.rev });
+      const lineage = url.searchParams.get('lineage') || '';
+      if (
+        parseInt(url.searchParams.get('rev'), 10) === store.rev &&
+        offset === store.messageBytes() &&
+        lineage === store.room.lineage
+      ) {
+        return sendJson(res, 200, { unchanged: true, rev: store.rev, epoch: store.epoch, lineage });
       }
-      return sendJson(res, 200, store.exportBackup(offset));
+      return sendJson(res, 200, store.exportBackup(offset, lineage));
+    }
+
+    // ---- junção de cópias: o membro devolve ao host o que só ele tem (por ID, sem duplicar) ----
+    if (method === 'GET' && p === '/api/sync/ids') return sendJson(res, 200, store.syncIds());
+
+    if (method === 'POST' && p === '/api/sync/state') {
+      const body = await readJson(req, 512 * 1024);
+      store.mergeState(body.state);
+      broadcast({ t: 'resync' });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && p === '/api/sync/messages') {
+      const body = await readJson(req, 1024 * 1024);
+      const added = store.importMessages(body.messages, { maxLength: MAX_MESSAGE_LENGTH });
+      if (added) broadcast({ t: 'resync' });
+      return sendJson(res, 200, { added });
+    }
+
+    m = p.match(/^\/api\/sync\/files\/([a-f0-9]{24})$/);
+    if (method === 'PUT' && m) {
+      const meta = store.getFile(m[1]);
+      if (!meta) throw httpError(404, 'arquivo desconhecido (envie o estado antes)');
+      if (store.fileStored(m[1])) return sendJson(res, 200, { ok: true, had: true });
+      const len = Number(req.headers['content-length']);
+      if (!Number.isFinite(len) || len !== meta.size || len > maxUploadBytes) throw httpError(400, 'tamanho do arquivo não confere');
+      const dest = path.join(store.uploadsDir, m[1]);
+      const tmp = dest + '.part';
+      const out = fs.createWriteStream(tmp);
+      try {
+        await new Promise((resolve, reject) => {
+          req.on('aborted', () => reject(httpError(400, 'envio cancelado')));
+          req.on('error', reject);
+          out.on('error', reject);
+          out.on('finish', resolve);
+          req.pipe(out);
+        });
+        if (fs.statSync(tmp).size !== meta.size) throw httpError(400, 'tamanho do arquivo não confere');
+        fs.renameSync(tmp, dest);
+      } catch (e) {
+        out.destroy();
+        fs.rm(tmp, { force: true }, () => {});
+        throw e;
+      }
+      store.markFileStored(m[1]);
+      return sendJson(res, 200, { ok: true });
     }
 
     if (method === 'POST' && p === '/api/heir') {

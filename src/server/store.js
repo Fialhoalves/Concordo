@@ -49,15 +49,20 @@ class Store {
     this.messages = new Map();
     for (const ch of this.state.channels) if (ch.type === 'text') this.messages.set(ch.id, []);
     this._loadMessages();
+    if (!Number.isInteger(this.state.room.epoch) || this.state.room.epoch < 1) this.state.room.epoch = 1;
+    if (!this.state.room.lineage) this.state.room.lineage = rid(6);
 
     this._timer = null;
-    this.rev = 1; // sobe a cada mudança; o sucessor usa para saber se há algo novo
+    this.rev = Date.now(); // sobe a cada mudança (e continua subindo se o host reabrir a sala)
     this._writeNow(); // garante que o id da sala fique salvo desde o início
   }
 
   _loadState() {
     const defaults = {
-      room: { id: rid(6), name: 'Concordo' },
+      // epoch: sobe a cada troca de host (o maior vence); lineage: identifica a "linha do tempo" do arquivo de
+      // mensagens (muda a cada troca de host, então cópias antigas baixam tudo de novo em vez de emendar bytes)
+      room: { id: rid(6), name: 'Concordo', epoch: 1, lineage: rid(6) },
+      removed: {},
       users: {},
       invites: {},
       channels: [
@@ -107,6 +112,8 @@ class Store {
         /* linha corrompida: ignora */
       }
     }
+    // mensagens importadas de outras cópias podem estar fora de ordem no arquivo
+    for (const list of this.messages.values()) list.sort((a, b) => a.ts - b.ts); // estável: mensagens do mesmo milissegundo mantêm a ordem do arquivo
   }
 
   save() {
@@ -196,6 +203,7 @@ class Store {
     if (!u) return false;
     this.tokenIndex.delete(u.tokenHash || hashToken(u.token));
     delete this.state.users[id];
+    this.state.removed[id] = Date.now(); // lápide: junção com cópias antigas não ressuscita quem foi removido
     this.save();
     return true;
   }
@@ -247,6 +255,135 @@ class Store {
     return true;
   }
 
+  // ---- geração (epoch) ----
+  get epoch() {
+    return this.state.room.epoch;
+  }
+
+  // Troca de host: a geração sobe (acima de qualquer uma que o novo host já viu) e o arquivo de mensagens
+  // ganha uma nova "linha do tempo".
+  bumpEpoch(atLeast = 0) {
+    this.state.room.epoch = Math.max(this.state.room.epoch, Number(atLeast) || 0) + 1;
+    this.state.room.lineage = rid(6);
+    this.save();
+    return this.state.room.epoch;
+  }
+
+  // ---- junção de cópias (por ID: nada some, nada duplica) ----
+  syncIds() {
+    const messages = [];
+    for (const list of this.messages.values()) for (const m of list) messages.push(m.id);
+    return { epoch: this.epoch, lineage: this.state.room.lineage, messages, files: Object.keys(this.state.files).filter((id) => this.fileStored(id)) };
+  }
+
+  // Recebe mensagens de outra cópia. Retorna quantas entraram.
+  importMessages(list, { maxLength = 4000 } = {}) {
+    let added = 0;
+    const known = new Set();
+    for (const l of this.messages.values()) for (const m of l) known.add(m.id);
+    const lines = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+      if (!raw || typeof raw !== 'object') continue;
+      const id = String(raw.id || '');
+      if (!/^[a-f0-9]{16}$/.test(id) || known.has(id)) continue;
+      if (!this.hasChannel(raw.channel, 'text')) continue;
+      const ts = Number(raw.ts);
+      if (!Number.isFinite(ts) || ts <= 0 || ts > Date.now() + 86400000) continue;
+      const text = typeof raw.text === 'string' ? raw.text.slice(0, maxLength) : '';
+      const attachments = (Array.isArray(raw.attachments) ? raw.attachments : [])
+        .filter((a) => a && /^[a-f0-9]{24}$/.test(String(a.id)))
+        .slice(0, 10)
+        .map((a) => ({ id: String(a.id), name: String(a.name || 'arquivo').slice(0, 120), size: Number(a.size) || 0, type: String(a.type || 'application/octet-stream').slice(0, 80) }));
+      const msg = { id, channel: raw.channel, userId: String(raw.userId || '').slice(0, 24), author: String(raw.author || '?').slice(0, 40), text, attachments, ts };
+      if (raw.replyTo && typeof raw.replyTo === 'object') {
+        msg.replyTo = { id: String(raw.replyTo.id || '').slice(0, 24), author: String(raw.replyTo.author || '').slice(0, 40), text: String(raw.replyTo.text || '').slice(0, 200) };
+      }
+      if (Array.isArray(raw.mentions)) msg.mentions = raw.mentions.map(String).slice(0, 20);
+      known.add(id);
+      lines.push(JSON.stringify(msg));
+      const arr = this.messages.get(msg.channel);
+      // inserção ordenada por data; no empate, depois das que já estavam
+      let i = arr.length;
+      while (i > 0 && arr[i - 1].ts > ts) i--;
+      arr.splice(i, 0, msg);
+      added += 1;
+    }
+    if (lines.length) {
+      fs.appendFileSync(this.messagesPath, lines.join('\n') + '\n');
+      this.rev += 1;
+    }
+    return added;
+  }
+
+  // Junta o estado de outra cópia ao meu: só acrescenta; edição mais recente vence; apagado/fixado/removido são união.
+  mergeState(other) {
+    if (!other || typeof other !== 'object') return;
+    const st = this.state;
+    const own = (o) => (o && typeof o === 'object' ? o : {});
+    // lápides primeiro
+    for (const [id, ts] of Object.entries(own(other.removed))) {
+      if (/^[a-f0-9]{12}$/.test(id) && !st.removed[id]) st.removed[id] = Number(ts) || Date.now();
+    }
+    for (const [id, u] of Object.entries(own(other.users))) {
+      if (!/^[a-f0-9]{12}$/.test(id) || st.users[id] || st.removed[id] || !u || !u.tokenHash) continue;
+      const name = String(u.name || '').slice(0, 24).trim();
+      if (!name || this.nameTaken(name)) continue;
+      st.users[id] = { id, name, role: 'member', tokenHash: String(u.tokenHash), createdAt: Number(u.createdAt) || Date.now() };
+      this.tokenIndex.set(st.users[id].tokenHash, id);
+    }
+    for (const c of Array.isArray(other.channels) ? other.channels : []) {
+      if (!c || !CHANNEL_TYPES.includes(c.type)) continue;
+      const id = slugChannel(c.id);
+      if (!id || id !== c.id || this.hasChannel(id) || st.channels.length >= MAX_CHANNELS) continue;
+      st.channels.push({ id, name: id, type: c.type });
+      if (c.type === 'text') this.messages.set(id, []);
+    }
+    for (const [id, f] of Object.entries(own(other.files))) {
+      if (!/^[a-f0-9]{24}$/.test(id) || st.files[id] || !f) continue;
+      st.files[id] = { id, name: String(f.name || 'arquivo').slice(0, 120), size: Number(f.size) || 0, type: String(f.type || 'application/octet-stream').slice(0, 80), uploader: String(f.uploader || ''), ts: Number(f.ts) || Date.now(), missing: true };
+    }
+    for (const [id, e] of Object.entries(own(other.edits))) {
+      if (!e || typeof e.text !== 'string') continue;
+      if (!st.edits[id] || (Number(e.at) || 0) > st.edits[id].at) st.edits[id] = { text: e.text.slice(0, 4000), at: Number(e.at) || Date.now() };
+    }
+    for (const id of Object.keys(own(other.deleted))) if (/^[a-f0-9]{16}$/.test(id)) st.deleted[id] = true;
+    for (const [id, p] of Object.entries(own(other.pins))) {
+      if (/^[a-f0-9]{16}$/.test(id) && !st.pins[id] && !st.deleted[id] && Object.keys(st.pins).length < 200) st.pins[id] = { by: String((p || {}).by || ''), at: Number((p || {}).at) || Date.now() };
+    }
+    for (const id of Object.keys(st.deleted)) delete st.pins[id];
+    for (const [id, byKey] of Object.entries(own(other.reactions))) {
+      if (!/^[a-f0-9]{16}$/.test(id) || st.deleted[id]) continue;
+      const mine = (st.reactions[id] = st.reactions[id] || {});
+      for (const [key, users] of Object.entries(own(byKey))) {
+        if (!Array.isArray(users) || (!mine[key] && Object.keys(mine).length >= 20)) continue;
+        const set = new Set(mine[key] || []);
+        for (const u of users.slice(0, 50)) set.add(String(u).slice(0, 24));
+        mine[key] = [...set];
+      }
+      if (!Object.keys(mine).length) delete st.reactions[id];
+    }
+    this.save();
+  }
+
+  fileStored(id) {
+    const f = this.state.files[id];
+    if (!f) return false;
+    try {
+      return fs.statSync(path.join(this.uploadsDir, id)).size === f.size;
+    } catch {
+      return false;
+    }
+  }
+
+  // arquivos que chegaram só como metadado (a cópia de quem não tinha os bytes)
+  markFileStored(id) {
+    const f = this.state.files[id];
+    if (f) {
+      delete f.missing;
+      this.save();
+    }
+  }
+
   messageBytes() {
     try {
       return fs.statSync(this.messagesPath).size;
@@ -266,7 +403,7 @@ class Store {
   }
 
   // Cópia incremental: o estado inteiro (pequeno) + só o que foi acrescentado em messages.jsonl.
-  exportBackup(offset = 0) {
+  exportBackup(offset = 0, lineage = '') {
     this.flush();
     let size = 0;
     try {
@@ -274,7 +411,7 @@ class Store {
     } catch {
       /* sem mensagens ainda */
     }
-    const reset = offset > size || offset < 0;
+    const reset = offset > size || offset < 0 || (lineage && lineage !== this.state.room.lineage) || (!lineage && offset > 0);
     const from = reset ? 0 : offset;
     let chunk = '';
     if (size > from) {
@@ -288,8 +425,10 @@ class Store {
       }
     }
     return {
-      v: 1,
+      v: 2,
       rev: this.rev,
+      epoch: this.epoch,
+      lineage: this.state.room.lineage,
       state: this.backupState(),
       reset,
       offset: size,
