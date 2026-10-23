@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('concordo', {
   backupStatus: (roomId) => ipcRenderer.invoke('backup:status', roomId),
   backupTakeover: (args) => ipcRenderer.invoke('backup:takeover', args),
   rendezvousResolve: (rv) => ipcRenderer.invoke('rendezvous:resolve', rv),
+  showWindow: () => ipcRenderer.invoke('app:show-window'),
+  getSettings: () => ipcRenderer.invoke('app:get-settings'),
+  setSettings: (next) => ipcRenderer.invoke('app:set-settings', next),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   on(channel, callback) {
     if (!EVENTS.has(channel)) return () => {};

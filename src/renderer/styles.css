@@ -417,3 +417,15 @@ a { color: var(--concordo-violet-light); }
 @keyframes rx-rise { 0% { transform: translateY(0) scale(.6); opacity: 0; } 12% { transform: translateY(-30px) scale(1.05); opacity: 1; } 100% { transform: translateY(-60vh) scale(1); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .float-rx { animation: rx-fade 2.2s linear forwards; } @keyframes rx-fade { 0%, 70% { opacity: 1; } 100% { opacity: 0; } } }
 .mascot-wave { width: 110px; height: auto; }
+
+/* ---------- barra de salas ---------- */
+.rail { width: 64px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; overflow-y: auto; background: var(--color-bg); border-right: 1px solid var(--color-border); }
+.rail-item { position: relative; width: 44px; height: 44px; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: var(--radius-lg, 16px); }
+.rail-tile { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 16px; color: #fff; font-weight: 700; font-size: 17px; transition: border-radius var(--motion-fast, 140ms), transform var(--motion-fast, 140ms); }
+.rail-tile.plain { background: var(--color-panel-elevated); color: var(--concordo-violet-light); border: 1px dashed var(--color-border); }
+.rail-item:hover .rail-tile, .rail-item:focus-visible .rail-tile { border-radius: 12px; }
+.rail-item.active .rail-tile { border-radius: 12px; box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--concordo-violet); }
+.rail-item:focus-visible { outline: 2px solid var(--concordo-violet-light); outline-offset: 2px; }
+.rail-crown { position: absolute; right: -3px; top: -3px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 999px; background: var(--color-bg); color: var(--color-warning, #f5b942); }
+.rail-badge { position: absolute; right: -4px; bottom: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--color-danger, #f46d75); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 2px var(--color-bg); }
+@media (max-width: 900px) { .rail { width: 56px; } .rail-item, .rail-tile { width: 38px; height: 38px; } }

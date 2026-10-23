@@ -217,6 +217,10 @@
       /* sem corpo */
     }
     if (!res.ok) {
+      if ([502, 503, 504, 530].includes(res.status) && !(data && data.error)) {
+        // a Cloudflare responde assim quando o computador do host fechou o app
+        throw Object.assign(new Error('A sala está offline: o host fechou o Concordo ou ficou sem internet.'), { network: true, offline: true });
+      }
       throw Object.assign(new Error((data && data.error) || `erro ${res.status}`), { status: res.status });
     }
     return data;
@@ -238,6 +242,7 @@
       url: session.url,
       token: session.token,
       name: session.user.name,
+      userId: session.user.id,
       rv: session.rv || (rooms[session.room.id] && rooms[session.room.id].rv) || '',
       savedAt: Date.now(),
     };
@@ -320,6 +325,7 @@
         savedList,
         version),
     );
+    syncBackground();
   }
 
   async function reconnect(room, button) {
@@ -512,6 +518,7 @@
   function enterHost(info) {
     S.isHost = true;
     S.session = { url: info.localUrl, token: info.token, user: info.user, room: info.room };
+    S.hosted = { roomId: info.room.id, name: info.room.name, localUrl: info.localUrl, token: info.token, userId: info.user.id };
     S.tunnel = { state: info.tunnelState, message: info.tunnelMessage };
     S.publicUrl = info.publicUrl;
     showChat();
@@ -595,8 +602,10 @@
       if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
     });
 
+    ui.rail = h('nav', { class: 'rail', 'aria-label': 'Salas' });
     mount(
       h('div', { class: 'chat' },
+        ui.rail,
         h('aside', { class: 'sidebar' },
           h('div', { class: 'room-head' }, ui.roomName, S.isHost ? ui.tunnel : null),
           h('div', { class: 'side-scroll' },
@@ -610,7 +619,174 @@
         ui.main),
     );
     renderTunnel();
+    renderRail();
+    syncBackground();
     setConn(S.ws && S.ws.readyState === 1 ? 'online' : 'connecting');
+  }
+
+  // ============================================================
+  // várias salas: barra de salas + conexões em segundo plano (só para avisos de mensagens novas)
+  // ============================================================
+  S.bg = new Map(); // roomId -> { ws, timer, retry }
+  S.bgUnread = new Map(); // roomId -> quantidade
+
+  function knownRooms() {
+    const list = [];
+    if (S.hosted) list.push({ roomId: S.hosted.roomId, name: S.hosted.name, hosted: true });
+    for (const r of Object.values(getRooms()).sort((a, b) => b.savedAt - a.savedAt)) {
+      if (!list.some((x) => x.roomId === r.roomId)) list.push({ ...r, name: r.roomName || r.name, hosted: false });
+    }
+    return list;
+  }
+
+  const initials = (name) => (String(name || '?').trim().match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase();
+
+  function renderRail() {
+    const rail = S.ui && S.ui.rail;
+    if (!rail || !S.session) return;
+    const current = S.session.room.id;
+    const items = knownRooms().map((r) => {
+      const unread = S.bgUnread.get(r.roomId) || 0;
+      const active = r.roomId === current;
+      const tile = h('span', { class: 'rail-tile', style: { background: colorFor(r.roomId) } }, initials(r.name));
+      return h('button', {
+        class: 'rail-item' + (active ? ' active' : ''), 'data-room': r.roomId,
+        title: r.name + (r.hosted ? ' (hospedada por você)' : ''), 'aria-label': r.name, 'aria-current': active ? 'true' : 'false',
+        onclick: () => switchRoom(r),
+      }, tile,
+      r.hosted ? h('span', { class: 'rail-crown' }, ico('crown', 12)) : null,
+      !active && unread ? h('span', { class: 'rail-badge' }, unread > 99 ? '99+' : String(unread)) : null);
+    });
+    rail.replaceChildren(...items,
+      h('button', { class: 'rail-item add', title: 'Entrar em outra sala ou hospedar', 'aria-label': 'Adicionar sala', 'data-act': 'add-room',
+        onclick: () => {
+          if (S.voice.client && !confirm('Você está numa chamada. Sair dela para trocar de tela?')) return;
+          showWelcome();
+        } }, h('span', { class: 'rail-tile plain' }, ico('plus', 20))));
+  }
+
+  async function switchRoom(target) {
+    if (S.session && target.roomId === S.session.room.id) return;
+    if (S.voice.client && !confirm('Você está numa chamada. Trocar de sala tira você dela. Continuar?')) return;
+    try {
+      let enter;
+      if (target.hosted) {
+        const info = bridge.hostInfo ? await bridge.hostInfo() : null;
+        if (!info) {
+          S.hosted = null;
+          renderRail();
+          throw new Error('A sala que você hospeda não está mais ativa.');
+        }
+        enter = () => enterHost(info);
+      } else {
+        let url = target.url;
+        let me;
+        try {
+          me = await request(url, target.token, 'GET', '/api/me');
+        } catch (e) {
+          if (e.status === 401) {
+            forgetRoom(target.roomId);
+            renderRail();
+            throw new Error('Você não faz mais parte dessa sala.');
+          }
+          const found = await followAddress(target.rv, target.token, target.url);
+          if (!found || !found.me) throw e;
+          url = found.url;
+          me = found.me;
+        }
+        enter = () => enterGuest({ url, token: target.token, user: me.user, room: me.room, rv: me.rv || target.rv });
+      }
+      teardownChat();
+      S.bgUnread.delete(target.roomId);
+      enter();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // Mantém um socket leve em cada sala que NÃO está aberta, só para contar mensagens novas e avisar.
+  function syncBackground() {
+    const current = S.session ? S.session.room.id : null;
+    const wanted = new Map();
+    for (const r of Object.values(getRooms())) if (r.roomId !== current) wanted.set(r.roomId, { url: r.url, token: r.token, rv: r.rv, name: r.roomName, userId: r.userId });
+    if (S.hosted && S.hosted.localUrl && S.hosted.roomId !== current) {
+      wanted.set(S.hosted.roomId, { url: S.hosted.localUrl, token: S.hosted.token, name: S.hosted.name, userId: S.hosted.userId, local: true });
+    }
+    for (const [id, c] of S.bg) {
+      if (!wanted.has(id)) {
+        clearTimeout(c.timer);
+        if (c.ws) {
+          c.ws.onclose = null;
+          c.ws.close();
+        }
+        S.bg.delete(id);
+      }
+    }
+    for (const [id, info] of wanted) if (!S.bg.has(id)) connectBackground(id, info);
+  }
+
+  function connectBackground(id, info) {
+    const c = { ws: null, timer: null, retry: 0, info };
+    S.bg.set(id, c);
+    const open = () => {
+      if (S.bg.get(id) !== c) return;
+      let ws;
+      try {
+        ws = new WebSocket(c.info.url.replace(/^http/i, 'ws') + '/ws?token=' + encodeURIComponent(c.info.token));
+      } catch {
+        return later();
+      }
+      c.ws = ws;
+      ws.onopen = () => {
+        c.retry = 0;
+      };
+      ws.onmessage = (ev) => {
+        let d;
+        try {
+          d = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        if (d.t !== 'msg' || !d.message) return;
+        const m = d.message;
+        if (S.bg.get(id) !== c || m.userId === c.info.userId) return;
+        S.bgUnread.set(id, (S.bgUnread.get(id) || 0) + 1);
+        renderRail();
+        try {
+          const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
+          const n = new Notification(`${m.author} · ${c.info.name || 'outra sala'} · #${m.channel}`, { body });
+          n.onclick = () => (bridge.showWindow ? bridge.showWindow() : window.focus());
+        } catch {
+          /* notificações indisponíveis */
+        }
+      };
+      ws.onclose = () => {
+        c.ws = null;
+        later();
+      };
+      ws.onerror = () => {};
+    };
+    const later = async () => {
+      if (S.bg.get(id) !== c) return;
+      c.retry += 1;
+      if (c.retry >= 2 && !c.info.local && c.info.rv) {
+        const found = await followAddress(c.info.rv, c.info.token, c.info.url).catch(() => null);
+        if (found && found.me) {
+          c.info.url = found.url;
+          const rooms = getRooms();
+          if (rooms[id]) {
+            rooms[id].url = found.url;
+            LS.set('concordo.rooms', rooms);
+          }
+        } else if (found && found.unauthorized) {
+          forgetRoom(id);
+          S.bg.delete(id);
+          return renderRail();
+        }
+      }
+      c.timer = setTimeout(open, Math.min(60000, 4000 * 2 ** Math.min(c.retry, 4)));
+    };
+    open();
   }
 
   function autosize() {
@@ -1010,7 +1186,7 @@
       const user = S.users.get(m.userId);
       const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
       const n = new Notification(`${user ? user.name : m.author} · #${m.channel}`, { body });
-      n.onclick = () => window.focus();
+      n.onclick = () => (bridge.showWindow ? bridge.showWindow() : window.focus());
     } catch {
       /* notificações indisponíveis */
     }
@@ -1090,6 +1266,14 @@
 
     ws.onopen = () => {
       S.retry = 0;
+      if (!S.isHost) {
+        api('GET', '/api/me').then((me) => {
+          if (me && me.rv && S.session && S.session.rv !== me.rv) {
+            S.session.rv = me.rv;
+            saveRoom(S.session);
+          }
+        }).catch(() => {});
+      }
       setConn('online');
       renderTakeoverBar();
       if (S.hasConnected) refreshAfterReconnect();
@@ -1732,6 +1916,17 @@
     const cam = select('videoinput', prefs.cam, 'Câmera');
     const out = select('audiooutput', prefs.out, 'Saída');
     const canOut = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+    const appCheck = (key, label) => {
+      const box = h('input', { type: 'checkbox', 'data-role': 'app-' + key, disabled: true });
+      if (bridge.getSettings) {
+        bridge.getSettings().then((cfg) => {
+          box.checked = !!cfg[key];
+          box.disabled = false;
+        }).catch(() => {});
+        box.addEventListener('change', () => bridge.setSettings({ [key]: box.checked }).catch(() => {}));
+      }
+      return h('label', { class: 'check' }, box, h('span', null, label));
+    };
     const check = (key, label, role) => {
       const box = h('input', { type: 'checkbox', 'data-role': role });
       box.checked = prefs[key] !== false;
@@ -1759,6 +1954,9 @@
       h('h3', null, 'Configurações'),
       h('h4', { class: 'sub' }, 'Aparência'),
       themeChoice(),
+      h('h4', { class: 'sub' }, 'Aplicativo'),
+      appCheck('closeToTray', 'Ao fechar a janela, continuar na bandeja do sistema'),
+      appCheck('autoStart', 'Abrir o Concordo junto com o Windows (em segundo plano)'),
       h('h4', { class: 'sub' }, 'Áudio'),
       h('div', { class: 'field' }, h('label', null, 'Microfone'), mic),
       canOut ? h('div', { class: 'field' }, h('label', null, 'Saída de som'), out) : null,
@@ -1923,6 +2121,7 @@
   async function endRoom() {
     if (!confirm('Encerrar a sala? O servidor para e todo mundo é desconectado. Os dados ficam guardados no seu computador.')) return;
     S.leaving = true;
+    S.hosted = null;
     try {
       await bridge.hostStop();
     } catch (e) {

@@ -169,3 +169,9 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 - **Migração automática:** se o host some por ~1 minuto, o sucessor assume a sala sozinho e os amigos o seguem pelo mesmo ponto de encontro.
 - **Reações:** figurinhas do mascote (`src/renderer/assets/mascot`) e emojis em mensagens e ao vivo na chamada (botão de carinha na barra de chamada).
 - **Áudio da tela:** ligado por padrão; tenta excluir a voz dos amigos e, se o Windows não entregar áudio assim, pede o som do sistema inteiro.
+
+## v0.8.0
+
+- **Bandeja do sistema:** fechar a janela deixa o Concordo rodando em segundo plano (ícone perto do relógio; botão direito → Sair). Configurações permite desligar isso e abrir junto com o Windows. Sair pela bandeja avisa se você está hospedando.
+- **Várias salas:** barra lateral com a sala que você hospeda e as salas dos amigos; clique para trocar sem derrubar a sua. Salas fora da tela mostram contador de mensagens novas e notificam. Limitação: a cópia de sucessor e a chamada de voz só funcionam na sala aberta.
+- **Erro 530:** quando o host fecha o app, a mensagem agora diz que a sala está offline em vez de "erro 530".

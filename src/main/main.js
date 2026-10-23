@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu, session, desktopCapturer, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage, dialog, session, desktopCapturer, safeStorage } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createConcordoServer } = require('../server');
@@ -150,6 +150,79 @@ ipcMain.handle('screen:prepare', (_event, sel) => {
   pendingScreen = { id: sel.id, audio: !!sel.audio, at: Date.now() };
 });
 
+// ---------- preferências do app e bandeja do sistema ----------
+const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+function readSettings() {
+  const defaults = { closeToTray: true, autoStart: false };
+  try {
+    return { ...defaults, ...JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) };
+  } catch {
+    return defaults;
+  }
+}
+function writeSettings(next) {
+  const cur = readSettings();
+  const merged = {
+    closeToTray: typeof next.closeToTray === 'boolean' ? next.closeToTray : cur.closeToTray,
+    autoStart: typeof next.autoStart === 'boolean' ? next.autoStart : cur.autoStart,
+  };
+  fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify(merged));
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: merged.autoStart, args: merged.autoStart ? ['--hidden'] : [] });
+  return merged;
+}
+ipcMain.handle('app:show-window', () => showWindow());
+ipcMain.handle('app:get-settings', () => readSettings());
+ipcMain.handle('app:set-settings', (_event, next) => writeSettings(next || {}));
+
+let tray = null;
+let quitting = false;
+let trayHintShown = false;
+
+function showWindow() {
+  if (!mainWindow) return createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+async function confirmQuit() {
+  if (!host) return true;
+  const r = await dialog.showMessageBox(mainWindow || undefined, {
+    type: 'warning',
+    buttons: ['Cancelar', 'Sair e encerrar a sala'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Concordo',
+    message: 'Você está hospedando a sala.',
+    detail: 'Se sair agora, os amigos ficam sem a sala (o sucessor assume em instantes, se houver um).',
+  });
+  return r.response === 1;
+}
+
+function setupTray() {
+  if (tray) return;
+  try {
+    const img = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 16, height: 16 });
+    tray = new Tray(img);
+  } catch (e) {
+    console.error('[concordo] bandeja indisponível:', e.message);
+    return;
+  }
+  tray.setToolTip('Concordo');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Abrir o Concordo', click: showWindow },
+    { type: 'separator' },
+    { label: 'Sair do Concordo', click: async () => {
+      if (await confirmQuit()) {
+        quitting = true;
+        app.quit();
+      }
+    } },
+  ]));
+  tray.on('click', showWindow);
+}
+
 // ---------- janela ----------
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -161,11 +234,13 @@ function createWindow() {
     title: 'Concordo',
     icon: path.join(__dirname, 'icon.png'),
     autoHideMenuBar: true,
+    show: !process.argv.includes('--hidden'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false, // voz e vídeo continuam normais com a janela na bandeja
     },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -178,6 +253,19 @@ function createWindow() {
     if (!url.startsWith('file://')) {
       event.preventDefault();
       openExternalSafe(url);
+    }
+  });
+  mainWindow.on('close', (event) => {
+    if (quitting || !tray || !readSettings().closeToTray) return;
+    event.preventDefault();
+    mainWindow.hide();
+    if (!trayHintShown) {
+      trayHintShown = true;
+      try {
+        tray.displayBalloon({ title: 'Concordo continua aberto', content: 'Ele ficou na bandeja do sistema. Clique com o botão direito no ícone para sair.' });
+      } catch {
+        /* só Windows */
+      }
     }
   });
   mainWindow.on('closed', () => {
@@ -424,6 +512,7 @@ ipcMain.handle('app:take-deeplink', () => {
 });
 
 ipcMain.handle('update:install', () => {
+  quitting = true;
   if (updater) updater.quitAndInstall();
 });
 
@@ -452,10 +541,7 @@ if (!app.requestSingleInstanceLock()) {
   pendingDeepLink = findDeepLink(process.argv);
 
   app.on('second-instance', (_event, argv) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    showWindow();
     deliverDeepLink(findDeepLink(argv));
   });
 
@@ -470,6 +556,7 @@ if (!app.requestSingleInstanceLock()) {
       app.setAsDefaultProtocolClient(PROTOCOL);
     }
     setupMedia();
+    setupTray();
     createWindow();
     setupUpdater();
     app.on('activate', () => {
@@ -478,11 +565,12 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('window-all-closed', () => {
-    app.quit();
+    if (quitting || !tray) app.quit(); // com a bandeja ativa, o app continua rodando
   });
 
   let cleaningUp = false;
   app.on('before-quit', (event) => {
+    quitting = true;
     if (cleaningUp || !host) return;
     event.preventDefault();
     cleaningUp = true;
