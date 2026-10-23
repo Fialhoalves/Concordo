@@ -298,3 +298,8 @@ textarea.input { resize: vertical; min-height: 84px; }
 .ctx-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px; cursor: pointer; }
 .ctx-btn:hover { border-color: var(--accent); }
 .me-bar .who .btn { margin-left: 4px; }
+
+.heir-note { border-top: 1px solid var(--line); padding: 6px 10px; font-size: 12px; color: var(--muted); }
+.heir-note[hidden], .takeover[hidden] { display: none; }
+.takeover { display: flex; gap: 10px; align-items: center; justify-content: space-between; background: rgba(242,184,75,.15); border-bottom: 1px solid var(--warn); padding: 8px 18px; font-size: 13px; }
+.heir { margin-left: 2px; }

@@ -2,7 +2,7 @@
 // Ponte segura entre a interface e o processo principal.
 const { contextBridge, ipcRenderer } = require('electron');
 
-const EVENTS = new Set(['host:status', 'update:status', 'deeplink']);
+const EVENTS = new Set(['host:status', 'update:status', 'deeplink', 'backup:status']);
 
 contextBridge.exposeInMainWorld('concordo', {
   appInfo: () => ipcRenderer.invoke('app:info'),
@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('concordo', {
   clearFixedAddress: () => ipcRenderer.invoke('tunnel:clear-fixed'),
   screenSources: () => ipcRenderer.invoke('screen:sources'),
   screenPrepare: (sel) => ipcRenderer.invoke('screen:prepare', sel),
+  backupStart: (args) => ipcRenderer.invoke('backup:start', args),
+  backupStop: () => ipcRenderer.invoke('backup:stop'),
+  backupStatus: (roomId) => ipcRenderer.invoke('backup:status', roomId),
+  backupTakeover: (args) => ipcRenderer.invoke('backup:takeover', args),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   on(channel, callback) {
     if (!EVENTS.has(channel)) return () => {};

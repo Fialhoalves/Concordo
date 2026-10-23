@@ -90,12 +90,14 @@ async function createConcordoServer(opts = {}) {
     maxUploadBytes = 90 * 1024 * 1024, // o plano grátis do Cloudflare corta em ~100 MB
     iceServers = DEFAULT_ICE, // STUN/TURN que os clientes usam nas chamadas
     version = '0.0.0',
+    takeoverUserId, // sucessor assumindo uma sala copiada: vira o dono
   } = opts;
   if (!dataDir) throw new Error('dataDir é obrigatório');
 
   const store = new Store(dataDir);
   if (roomName) store.setRoomName(cleanName(roomName, 40));
-  const owner = ownerName ? store.ensureOwner(cleanName(ownerName)) : store.getOwner();
+  if (takeoverUserId && !store.transferOwner(takeoverUserId)) throw new Error('usuário da cópia não encontrado');
+  const owner = ownerName && !takeoverUserId ? store.ensureOwner(cleanName(ownerName)) : store.getOwner();
 
   const pub = (u) => store.publicUser(u);
   const clients = new Map(); // userId -> Set<WebSocket>
@@ -295,6 +297,7 @@ async function createConcordoServer(opts = {}) {
         limits: { maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH, maxVoice: MAX_VOICE },
         voice: voiceSnapshot(),
         ice: iceServers,
+        heir: (store.getHeir() || {}).id || null,
       });
     }
 
@@ -337,6 +340,24 @@ async function createConcordoServer(opts = {}) {
         expiresAt: inv.expiresAt,
         maxUses: inv.maxUses,
       });
+    }
+
+    if (method === 'GET' && p === '/api/backup') {
+      const heir = store.getHeir();
+      if (!heir || heir.id !== user.id) throw httpError(403, 'só o sucessor da sala pode copiar os dados');
+      const offset = parseInt(url.searchParams.get('offset'), 10) || 0;
+      if (parseInt(url.searchParams.get('rev'), 10) === store.rev && offset === store.messageBytes()) {
+        return sendJson(res, 200, { unchanged: true, rev: store.rev });
+      }
+      return sendJson(res, 200, store.exportBackup(offset));
+    }
+
+    if (method === 'POST' && p === '/api/heir') {
+      requireOwner(user);
+      const body = await readJson(req);
+      if (!store.setHeir(String(body.userId || ''))) throw httpError(400, 'usuário inválido para sucessor');
+      broadcast({ t: 'heir', id: store.getHeir().id });
+      return sendJson(res, 200, { ok: true });
     }
 
     if (method === 'GET' && p === '/api/session-code') {

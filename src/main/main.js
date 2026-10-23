@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createConcordoServer } = require('../server');
 const tunnel = require('./tunnel');
+const backup = require('./backup');
 
 const PROTOCOL = 'concordo';
 
@@ -254,36 +255,106 @@ async function stopHost() {
   await current.server.close().catch(() => {});
 }
 
-ipcMain.handle('host:start', async (_event, opts = {}) => {
-  if (!host) {
-    const fixed = readFixedConfig();
-    let server;
-    try {
-      server = await createConcordoServer({
+async function startHost({ dataDir, roomName, ownerName, takeoverUserId }) {
+  const fixed = readFixedConfig();
+  let server;
+  try {
+    server = await createConcordoServer({
       port: fixed ? fixed.port : 0,
-      dataDir: path.join(app.getPath('userData'), 'host-data'),
-      roomName: opts.roomName,
-      ownerName: opts.nickname || 'Anfitrião',
+      dataDir,
+      roomName,
+      ownerName,
+      takeoverUserId,
       getPublicUrl: () => (host ? host.publicUrl : null),
       version: app.getVersion(),
       iceServers: iceFromEnv(),
-      });
-    } catch (e) {
-      if (e && e.code === 'EADDRINUSE') {
-        throw new Error(`A porta ${fixed ? fixed.port : ''} já está em uso. Feche o outro Concordo ou troque a porta do endereço fixo.`);
-      }
-      throw e;
+    });
+  } catch (e) {
+    if (e && e.code === 'EADDRINUSE') {
+      throw new Error(`A porta ${fixed ? fixed.port : ''} já está em uso. Feche o outro Concordo ou troque a porta do endereço fixo.`);
     }
-    host = {
-      server,
-      owner: server.owner,
-      tunnel: null,
-      publicUrl: null,
-      tunnelState: 'starting',
-      tunnelMessage: '',
-    };
-    openTunnel(); // em segundo plano; a interface acompanha por 'host:status'
+    throw e;
   }
+  host = {
+    server,
+    owner: server.owner,
+    tunnel: null,
+    publicUrl: null,
+    tunnelState: 'starting',
+    tunnelMessage: '',
+  };
+  openTunnel(); // em segundo plano; a interface acompanha por 'host:status'
+}
+
+ipcMain.handle('host:start', async (_event, opts = {}) => {
+  if (!host) {
+    await startHost({
+      dataDir: path.join(app.getPath('userData'), 'host-data'),
+      roomName: opts.roomName,
+      ownerName: opts.nickname || 'Anfitrião',
+    });
+  }
+  return hostSnapshot();
+});
+
+// ---------- cópia da sala e migração de host ----------
+const SYNC_EVERY_MS = 45000;
+let backupJob = null; // { roomId, timer, running }
+let backupInfo = { roomId: null, at: null, error: null };
+const roomIdOk = (id) => typeof id === 'string' && /^[a-f0-9]{4,32}$/.test(id);
+const backupDir = (roomId) => path.join(app.getPath('userData'), 'backups', roomId);
+
+function stopBackup() {
+  if (backupJob) clearInterval(backupJob.timer);
+  backupJob = null;
+}
+
+function startBackup({ url, token, roomId }) {
+  if (backupJob && backupJob.roomId === roomId && backupJob.url === url && backupJob.token === token) return;
+  stopBackup();
+  const job = { roomId, url, token, running: false, timer: null };
+  const tick = async () => {
+    if (job.running) return;
+    job.running = true;
+    try {
+      await backup.syncOnce({ dir: backupDir(roomId), url, token });
+      const d = backup.describe(backupDir(roomId));
+      backupInfo = { roomId, at: d ? d.at : Date.now(), error: null };
+    } catch (e) {
+      const d = backup.describe(backupDir(roomId));
+      backupInfo = { roomId, at: d ? d.at : null, error: e.message };
+    } finally {
+      job.running = false;
+      send('backup:status', backupInfo);
+    }
+  };
+  job.timer = setInterval(tick, SYNC_EVERY_MS);
+  backupJob = job;
+  tick();
+}
+
+ipcMain.handle('backup:start', (_event, args = {}) => {
+  if (host || !roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return false;
+  startBackup(args);
+  return true;
+});
+ipcMain.handle('backup:stop', () => {
+  stopBackup();
+  return true;
+});
+ipcMain.handle('backup:status', (_event, roomId) => {
+  if (!roomIdOk(roomId)) return null;
+  return backup.describe(backupDir(roomId));
+});
+
+// O sucessor assume a sala a partir da cópia local: vira o dono e abre um túnel novo.
+ipcMain.handle('backup:takeover', async (_event, args = {}) => {
+  if (host) throw new Error('Você já está hospedando uma sala.');
+  if (!roomIdOk(args.roomId) || typeof args.userId !== 'string') throw new Error('Dados inválidos.');
+  const dir = backupDir(args.roomId);
+  if (!backup.describe(dir)) throw new Error('Ainda não há cópia desta sala neste computador.');
+  stopBackup();
+  await startHost({ dataDir: dir, takeoverUserId: args.userId });
   return hostSnapshot();
 });
 

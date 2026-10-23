@@ -69,6 +69,22 @@ Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo 
   o host pode configurar um servidor TURN (veja abaixo).
 - Pensado para **grupos pequenos de amigos de confiança**. Quem tem o convite entra; o dono da sala pode remover membros.
 
+### Se o host sumir: sucessor
+
+Toda sala tem um **sucessor** (🛡️): por padrão, o primeiro amigo que entrou. O dono pode trocar passando o mouse sobre
+um membro e clicando em 🛡️. O app do sucessor guarda uma cópia da sala neste computador (mensagens, arquivos, membros),
+atualizada a cada ~45 segundos.
+
+- Se o host cair, o sucessor vê o aviso **"O host parece ter saído"** e pode clicar em **Assumir a sala**: o computador dele
+  vira o servidor com a cópia, ele vira o dono e o app mostra um **código novo**.
+- O sucessor manda esse código aos amigos por onde vocês conversam fora do Concordo. Cada um cola em **Entrar** e volta para
+  a sala com o mesmo histórico e a mesma conta, sem convite novo (o endereço mudou, então esse envio é manual).
+- A assunção é sempre uma decisão do sucessor (nada de dois servidores ao mesmo tempo). Se o host original voltar, ele deve
+  entrar na sala nova pelo código, não reabrir a antiga.
+- O sucessor recebe uma cópia completa da sala, inclusive os dados de acesso dos membros: escolha alguém de tanta confiança
+  quanto o host.
+- Mensagens enviadas depois da última cópia (até ~45 s antes de o host cair) podem se perder.
+
 ### Endereço fixo (opcional)
 
 Na tela **Hospedar uma sala**, abra **Endereço fixo (avançado)**:
@@ -135,4 +151,4 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 
 1. ~~Voz, vídeo e compartilhamento de tela~~ (feito na v0.2). Ideias seguintes: escolher microfone/saída de som, SFU opcional para salas maiores.
 2. ~~Endereço fixo via *named tunnel*~~ (feito na v0.2.1).
-3. Migração de host: outro membro assume a sala quando o host sai.
+3. ~~Migração de host: outro membro assume a sala quando o host sai~~ (feito na v0.4.0, com troca de endereço manual).

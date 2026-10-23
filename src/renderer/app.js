@@ -183,6 +183,9 @@
     ui: {},
     update: null,
     ice: [],
+    heir: null,
+    backup: null, // { at, error } da cópia local da sala (quando sou o sucessor)
+    afterTakeover: false,
     voice: { rooms: {}, client: null, channel: null, joining: null, focus: null },
   };
 
@@ -537,8 +540,11 @@
 
     ui.stage = h('div', { class: 'stage' });
     ui.voicePanel = h('div', { class: 'voice-panel', hidden: true });
+    ui.heirNote = h('div', { class: 'heir-note', hidden: true });
+    ui.takeover = h('div', { class: 'takeover', hidden: true });
     ui.main = h('div', { class: 'main' },
       h('div', { class: 'main-head' }, ui.chName, ui.conn),
+      ui.takeover,
       ui.stage,
       ui.messages,
       h('div', { class: 'composer-wrap' },
@@ -571,6 +577,7 @@
             h('div', { class: 'section' }, h('span', null, 'Membros')),
             ui.memberList),
           ui.voicePanel,
+          ui.heirNote,
           meBar),
         ui.main),
     );
@@ -652,12 +659,14 @@
     S.online = new Set(st.online);
     S.limits = st.limits;
     S.ice = st.ice || [];
+    S.heir = st.heir || null;
     S.voice.rooms = st.voice || {};
     S.session.user = st.you;
     S.session.room = st.room;
     S.ui.roomName.textContent = st.room.name;
     renderChannels();
     renderMembers();
+    syncBackup();
   }
 
   function renderChannels() {
@@ -703,6 +712,14 @@
           avatar(u.id, u.name, { presence: true }),
           h('span', { class: 'name' }, u.name),
           u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, '👑') : null,
+          u.id === S.heir ? h('span', { class: 'heir', title: 'Sucessor: guarda uma cópia e assume a sala se o host sair' }, '🛡️') : null,
+          me.role === 'owner' && u.role !== 'owner' && u.id !== S.heir
+            ? h('button', {
+                class: 'btn small ghost kick',
+                title: 'Tornar sucessor (assume a sala se você sair)',
+                onclick: () => makeHeir(u),
+              }, '🛡️')
+            : null,
           me.role === 'owner' && u.id !== me.id
             ? h('button', {
                 class: 'btn small ghost kick',
@@ -712,6 +729,15 @@
             : null),
       ),
     );
+  }
+
+  async function makeHeir(u) {
+    try {
+      await api('POST', '/api/heir', { userId: u.id });
+      toast(`${u.name} agora é o sucessor da sala.`, 'ok');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   async function removeMember(u) {
@@ -938,6 +964,7 @@
     ws.onopen = () => {
       S.retry = 0;
       setConn('online');
+      renderTakeoverBar();
       if (S.hasConnected) refreshAfterReconnect();
       S.hasConnected = true;
     };
@@ -965,6 +992,7 @@
       }
       setConn('reconnecting');
       scheduleReconnect();
+      renderTakeoverBar();
     };
     ws.onerror = () => {};
   }
@@ -994,6 +1022,7 @@
           return leave();
         }
         setConn('reconnecting');
+        renderTakeoverBar();
         return scheduleReconnect();
       }
       openSocket();
@@ -1025,6 +1054,11 @@
       case 'channel':
         if (!S.channels.some((c) => c.id === d.channel.id)) S.channels.push(d.channel);
         return renderChannels();
+      case 'heir':
+        S.heir = d.id;
+        renderMembers();
+        syncBackup();
+        return;
       case 'voice':
         S.voice.rooms = d.rooms || {};
         voiceRoomChanged();
@@ -1042,6 +1076,75 @@
         renderStage();
         return toast(d.message, 'error');
       default:
+    }
+  }
+
+  // ============================================================
+  // sucessor: cópia da sala e migração de host
+  // ============================================================
+  const iAmHeir = () => !!(S.session && !S.isHost && S.heir && S.heir === S.session.user.id);
+
+  function syncBackup() {
+    if (!bridge.backupStart || !S.session) return;
+    if (iAmHeir()) {
+      bridge.backupStart({ url: S.session.url, token: S.session.token, roomId: S.session.room.id }).catch(() => {});
+    } else if (!S.isHost) {
+      bridge.backupStop().catch(() => {});
+    }
+    renderHeirNote();
+  }
+
+  function ago(ts) {
+    if (!ts) return 'ainda sem cópia';
+    const min = Math.round((Date.now() - ts) / 60000);
+    return min < 1 ? 'agora há pouco' : min < 60 ? `${min} min atrás` : `${Math.round(min / 60)} h atrás`;
+  }
+
+  function renderHeirNote() {
+    const ui = S.ui;
+    if (!ui || !ui.heirNote) return;
+    if (!iAmHeir()) {
+      ui.heirNote.hidden = true;
+      return;
+    }
+    ui.heirNote.hidden = false;
+    ui.heirNote.textContent = '🛡️ Você é o sucessor desta sala · cópia: ' + (S.backup && S.backup.error ? 'falhou (' + S.backup.error + ')' : ago(S.backup && S.backup.at));
+  }
+
+  // O host some: o sucessor vê um aviso fixo e decide se assume.
+  function renderTakeoverBar() {
+    const ui = S.ui;
+    if (!ui || !ui.takeover) return;
+    const lost = iAmHeir() && S.retry >= 5 && !S.leaving;
+    if (!lost) {
+      ui.takeover.hidden = true;
+      ui.takeover.replaceChildren();
+      return;
+    }
+    if (!ui.takeover.hidden) return;
+    ui.takeover.hidden = false;
+    bridge.backupStatus(S.session.room.id).then((info) => {
+      ui.takeover.replaceChildren(
+        h('span', null, info
+          ? `O host parece ter saído. Você tem uma cópia da sala (${ago(info.at)}).`
+          : 'O host parece ter saído, mas você ainda não tem uma cópia desta sala.'),
+        info ? h('button', { class: 'btn small primary', 'data-act': 'takeover', onclick: takeOverRoom }, 'Assumir a sala') : null);
+    });
+  }
+
+  async function takeOverRoom() {
+    if (!confirm('Assumir a sala? Seu computador vira o servidor, com as mensagens e arquivos da última cópia, e você vira o dono. ' +
+      'Depois, mande o novo código para o pessoal reconectar. Se o host original voltar, ele deve entrar na sua sala pelo código.')) return;
+    const me = S.session.user.id;
+    const roomId = S.session.room.id;
+    try {
+      if (S.voice.client) leaveVoice({ silent: true, local: true });
+      const info = await bridge.backupTakeover({ roomId, userId: me });
+      closeSocket();
+      S.afterTakeover = true;
+      enterHost(info);
+    } catch (e) {
+      toast(e.message, 'error');
     }
   }
 
@@ -1484,7 +1587,7 @@
   // ============================================================
   // convites e canais (dono da sala)
   // ============================================================
-  function openInviteModal() {
+  function openInviteModal({ sessionCode = false } = {}) {
     if (S.tunnel.state !== 'ready') return toast('O túnel ainda não está pronto.', 'error');
     const uses = h('select', { class: 'input' },
       h('option', { value: '1' }, 'Uma pessoa (recomendado)'),
@@ -1517,8 +1620,12 @@
       }
     });
 
+    if (sessionCode) {
+      note.textContent = 'Você assumiu a sala! Mande este código para o pessoal colar em "Entrar": quem já estava na sala reconecta sem convite novo.';
+      setTimeout(() => session.click(), 0);
+    }
     const close = modal([
-      h('h3', null, 'Convidar amigos'),
+      h('h3', null, sessionCode ? 'Sala assumida' : 'Convidar amigos'),
       h('div', { class: 'field' }, h('label', null, 'Quantas pessoas podem usar'), uses),
       h('div', { class: 'row' }, gen, session),
       h('div', { class: 'field', style: { marginTop: '14px' } }, h('label', null, 'Código'), box),
@@ -1565,6 +1672,7 @@
   function teardownChat() {
     S.leaving = true;
     if (S.voice.client) leaveVoice({ silent: true, local: true });
+    if (bridge.backupStop && !S.isHost) bridge.backupStop().catch(() => {});
     closeSocket();
     S.session = null;
     S.isHost = false;
@@ -1632,6 +1740,10 @@
       S.tunnel = { state: ev.state, message: ev.message };
       S.publicUrl = ev.publicUrl;
       renderTunnel();
+      if (ev.state === 'ready' && S.isHost && S.afterTakeover) {
+        S.afterTakeover = false;
+        openInviteModal({ sessionCode: true });
+      }
       if (ev.state === 'error' && S.isHost) toast('O túnel caiu. Seus amigos não conseguem entrar até ele voltar.', 'error');
     });
     bridge.on('update:status', (ev) => {
@@ -1639,6 +1751,10 @@
       renderBanner();
     });
     bridge.on('deeplink', handleDeepLink);
+    bridge.on('backup:status', (ev) => {
+      S.backup = ev;
+      renderHeirNote();
+    });
 
     const running = await bridge.hostInfo();
     if (running) return enterHost(running);

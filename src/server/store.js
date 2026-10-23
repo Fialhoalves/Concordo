@@ -44,6 +44,7 @@ class Store {
     this._loadMessages();
 
     this._timer = null;
+    this.rev = 1; // sobe a cada mudança; o sucessor usa para saber se há algo novo
     this._writeNow(); // garante que o id da sala fique salvo desde o início
   }
 
@@ -97,6 +98,7 @@ class Store {
   }
 
   save() {
+    this.rev += 1;
     if (this._timer) return;
     this._timer = setTimeout(() => {
       this._timer = null;
@@ -185,6 +187,76 @@ class Store {
     return true;
   }
 
+  // ---- sucessor (herdeiro) e transferência da sala ----
+  // O herdeiro guarda uma cópia da sala e pode assumi-la se o host sumir.
+  getHeir() {
+    const chosen = this.state.heirId && this.state.users[this.state.heirId];
+    if (chosen && chosen.role !== 'owner') return chosen;
+    return this.users()
+      .filter((u) => u.role !== 'owner')
+      .sort((a, b) => a.createdAt - b.createdAt)[0] || null;
+  }
+
+  setHeir(id) {
+    const u = this.state.users[id];
+    if (!u || u.role === 'owner') return false;
+    this.state.heirId = id;
+    this.save();
+    return true;
+  }
+
+  // Passa o dono da sala para outro usuário (usado quando o herdeiro assume).
+  transferOwner(id) {
+    const next = this.state.users[id];
+    if (!next) return false;
+    for (const u of this.users()) if (u.role === 'owner') u.role = 'member';
+    next.role = 'owner';
+    delete this.state.heirId;
+    this.save();
+    return true;
+  }
+
+  messageBytes() {
+    try {
+      return fs.statSync(this.messagesPath).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  // Cópia incremental: o estado inteiro (pequeno) + só o que foi acrescentado em messages.jsonl.
+  exportBackup(offset = 0) {
+    this.flush();
+    let size = 0;
+    try {
+      size = fs.statSync(this.messagesPath).size;
+    } catch {
+      /* sem mensagens ainda */
+    }
+    const reset = offset > size || offset < 0;
+    const from = reset ? 0 : offset;
+    let chunk = '';
+    if (size > from) {
+      const fd = fs.openSync(this.messagesPath, 'r');
+      try {
+        const buf = Buffer.alloc(size - from);
+        fs.readSync(fd, buf, 0, buf.length, from);
+        chunk = buf.toString('latin1'); // bytes preservados; o cliente regrava como binário
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    return {
+      v: 1,
+      rev: this.rev,
+      state: this.state,
+      reset,
+      offset: size,
+      chunk,
+      files: Object.values(this.state.files).map((f) => ({ id: f.id, size: f.size })),
+    };
+  }
+
   // ---- convites ----
   createInvite({ maxUses = 1, hours = 24 } = {}) {
     const now = Date.now();
@@ -252,6 +324,7 @@ class Store {
       ts: Date.now(),
     };
     fs.appendFileSync(this.messagesPath, JSON.stringify(msg) + '\n');
+    this.rev += 1;
     if (!this.messages.has(channel)) this.messages.set(channel, []);
     this.messages.get(channel).push(msg);
     return msg;
