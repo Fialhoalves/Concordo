@@ -103,18 +103,15 @@ test/           testes (node:test)
 
 ## Publicar uma versão (GitHub Releases)
 
-1. Crie um repositório **público** no GitHub e envie o código (`git push`). O electron-builder descobre o usuário e o nome do repositório pelo `git remote origin`.
-2. Para cada versão nova:
+É automático. Para lançar uma versão nova:
 
-   ```bash
-   npm version patch        # ou minor / major: atualiza o package.json e cria a tag vX.Y.Z
-   git push --follow-tags
-   ```
+1. Suba o número em `package.json` (`"version": "0.2.1"`, por exemplo) e faça o commit na `main`.
+2. Só isso. O workflow `.github/workflows/release.yml` vê que a tag `v0.2.1` ainda não existe, roda os testes,
+   gera o instalador do Windows e cria a Release (e a tag) com `Concordo-Setup-X.Y.Z.exe`, `.blockmap` e `latest.yml`.
 
-3. O workflow `.github/workflows/release.yml` roda sozinho: executa os testes, gera o instalador do Windows
-   e publica na página de **Releases** (`Concordo Setup X.Y.Z.exe`).
-4. Mande o link dessa página para os amigos, **uma vez só**. Depois disso o app confere se há versão nova ao abrir,
-   baixa em segundo plano e mostra o botão **Reiniciar e atualizar**.
+Commits que não mudam a versão não geram Release. Quem já tem o app instalado recebe a versão nova sozinho:
+o app confere ao abrir, baixa em segundo plano e mostra o botão **Reiniciar e atualizar**.
+Na primeira vez, mande aos amigos o link da página de Releases.
 
 Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirmação).
 
