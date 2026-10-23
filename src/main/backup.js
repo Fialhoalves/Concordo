@@ -24,7 +24,8 @@ function writeAtomic(file, data) {
 }
 
 // Uma rodada de sincronização. Retorna { changed, rev, files }.
-async function syncOnce({ dir, url, token, fetchImpl = fetch }) {
+// maxFileBytes: anexos maiores que isso não são baixados para a cópia (0 = nenhum; omitido = todos).
+async function syncOnce({ dir, url, token, fetchImpl = fetch, maxFileBytes = Infinity }) {
   fs.mkdirSync(path.join(dir, 'uploads'), { recursive: true });
   const headers = { Authorization: `Bearer ${token}` };
   const meta = readMeta(dir) || { rev: 0, offset: 0 };
@@ -65,6 +66,7 @@ async function syncOnce({ dir, url, token, fetchImpl = fetch }) {
   let downloaded = 0;
   for (const f of files) {
     if (!FILE_ID.test(f.id)) continue;
+    if (f.size > maxFileBytes) continue;
     const dest = path.join(dir, 'uploads', f.id);
     if (fs.existsSync(dest) && fs.statSync(dest).size === f.size) continue;
     const r = await fetchImpl(`${url}/api/files/${f.id}`, { headers });

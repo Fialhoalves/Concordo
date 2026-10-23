@@ -263,12 +263,14 @@ textarea.input { resize: vertical; min-height: 84px; }
 .main.is-voice .stage.live { display: grid; }
 .stage.live.n1 { grid-template-columns: 1fr; }
 .stage.live.n2, .stage.live.n4 { grid-template-columns: repeat(2, 1fr); }
-.stage.live.has-focus { grid-template-columns: 1fr 180px; grid-auto-rows: 120px; }
-.stage.live.has-focus .tile.focused { grid-column: 1; grid-row: 1 / span 8; }
+/* um destaque grande + miniaturas empilhadas ao lado; o destaque ocupa a altura da área e nunca passa dela */
+.stage.live.has-focus { display: flex; flex-flow: column wrap; align-content: flex-start; overflow: auto; }
+.stage.live.has-focus .tile { width: 200px; height: 120px; flex: none; min-height: 0; }
+.stage.live.has-focus .tile.focused { width: calc(100% - 210px); height: 100%; }
 .tile { position: relative; background: var(--panel); border-radius: var(--radius); overflow: hidden; display: grid; place-items: center; min-height: 120px; cursor: pointer; border: 2px solid transparent; }
 .tile.speaking { border-color: var(--ok); }
-.tile video { width: 100%; height: 100%; object-fit: cover; background: #000; }
-.tile.screen video { object-fit: contain; }
+.tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+.tile.screen video { object-fit: contain; } /* a tela compartilhada nunca é cortada: aparece inteira, com barras se precisar */
 .tile video[hidden], .tile-avatar[hidden] { display: none; }
 .tile-avatar .avatar { width: 72px; height: 72px; font-size: 30px; }
 .tile-label { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px; font-size: 12px; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -515,3 +517,13 @@ a { color: var(--concordo-violet-light); }
 .room-status[data-state='checking']::before { animation: rs-pulse 1s ease-in-out infinite; }
 @keyframes rs-pulse { 50% { opacity: .2; } }
 .saved-item .row { flex-wrap: wrap; justify-content: flex-end; }
+
+/* ---- indicador de internet e disco ---- */
+.meter { display: flex; flex-wrap: wrap; gap: 2px 10px; width: 100%; padding: 4px 10px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--color-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; text-align: left; }
+.meter:hover { color: var(--text); background: var(--hover, rgba(127,127,127,.08)); }
+.meter[hidden] { display: none; }
+.meter-disk { margin-left: auto; }
+.usage-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.usage-table td { padding: 3px 6px; border-bottom: 1px solid var(--line); }
+.usage-table td:not(:first-child) { text-align: right; white-space: nowrap; }
+.usage-table tr.total td { font-weight: 600; }

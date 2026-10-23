@@ -211,3 +211,9 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Várias salas hospedadas ao mesmo tempo**: "Hospedar" agora sempre cria uma sala NOVA (antes só reabria e renomeava a que já estava ativa). Cada sala tem sua pasta (`host-data/<id>`) e seu próprio túnel; as outras continuam funcionando enquanto você usa uma. O endereço fixo (túnel nomeado) vale para a primeira sala.
 - **Suas salas** na tela inicial lista também as que você hospeda: "aberta neste computador" (Voltar) ou "fechada" (Abrir). A barra lateral mostra todas, e abrir uma fechada é um clique.
 - A sala única das versões anteriores é movida sozinha para a nova estrutura na primeira abertura.
+
+## v0.13.0
+
+- **Transmissão de tela sem cortes**: a tela em destaque passava da altura da janela e o fundo era cortado; agora ela sempre aparece inteira (com barras pretas quando a proporção for outra), tanto em destaque quanto na grade e nas miniaturas. Zoom e arrastar para escolher uma parte ficam como ideia futura (tela cheia continua).
+- **Indicador de internet e disco** no canto da barra lateral (`↓ 12 KB/s ↑ 3 KB/s · 38 MB em disco`). Clique para ver sessão, hoje e mês por tipo (mensagens e arquivos, voz/vídeo/tela, servidor das salas que você hospeda) e o disco por sala. Dá para ocultar ali ou em Configurações. Os números são estimativas do que o app contou: o tráfego do Windows tem cabeçalhos extras, atualizações e o túnel.
+- **Anexos nas cópias**: nas Configurações dá para escolher guardar nas cópias das salas todos os anexos, só até 10 MB (padrão) ou nenhum. Mensagens e metadados sempre vêm; só os arquivos grandes deixam de ser baixados (menos disco e menos internet do host).

@@ -410,6 +410,9 @@
     }
 
     // Qualidade da conexão com cada pessoa (ping e perda de pacotes), a cada 3 s.
+    // Bytes que a chamada gastou (soma de todos os pares, contando só o que cresceu desde a leitura anterior).
+    const traffic = { up: 0, down: 0 };
+
     async function qualityPoll() {
       let dirty = false;
       for (const peer of peers.values()) {
@@ -424,15 +427,23 @@
           let rtt = null;
           let lost = 0;
           let recv = 0;
+          let pair = null;
           (await peer.pc.getStats()).forEach((r) => {
-            if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded' && typeof r.currentRoundTripTime === 'number') {
-              rtt = Math.round(r.currentRoundTripTime * 1000);
+            if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded') {
+              if (typeof r.currentRoundTripTime === 'number') rtt = Math.round(r.currentRoundTripTime * 1000);
+              pair = { id: r.id, up: r.bytesSent || 0, down: r.bytesReceived || 0 };
             }
             if (r.type === 'inbound-rtp') {
               lost += r.packetsLost || 0;
               recv += r.packetsReceived || 0;
             }
           });
+          if (pair) {
+            const t = peer.tprev && peer.tprev.id === pair.id ? peer.tprev : { up: 0, down: 0 };
+            traffic.up += pair.up >= t.up ? pair.up - t.up : pair.up;
+            traffic.down += pair.down >= t.down ? pair.down - t.down : pair.down;
+            peer.tprev = pair;
+          }
           const prev = peer.qprev || { lost, recv };
           const dl = Math.max(0, lost - prev.lost);
           const dr = Math.max(0, recv - prev.recv);
@@ -873,6 +884,7 @@
       speaking: (id) => speaking.has(id),
       peerIds: () => [...peers.keys()],
       quality: (id) => (peers.get(id) || {}).quality || null,
+      traffic: () => ({ ...traffic }),
       peer(id) {
         const p = peers.get(id);
         if (!p) return null;

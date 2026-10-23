@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createConcordoServer } = require('../server');
 const tunnel = require('./tunnel');
 const backup = require('./backup');
+const usage = require('./usage');
 const rendezvous = require('./rendezvous');
 
 const PROTOCOL = 'concordo';
@@ -13,6 +14,7 @@ const PROTOCOL = 'concordo';
 let mainWindow = null;
 let pendingDeepLink = null;
 const hosts = new Map(); // roomId -> { id, server, tunnel, publicUrl, tunnelState, tunnelMessage, owner, watch, fixed }
+let hostTrafficClosed = { in: 0, out: 0 }; // tráfego das salas que já fecharam nesta sessão
 const isLive = (h) => !!h && hosts.get(h.id) === h;
 let updater = null;
 
@@ -346,9 +348,19 @@ function losesTo(mine, other) {
   return !!other.o && other.o !== mine.owner && other.o < mine.owner;
 }
 
+function noteClosedTraffic(h) {
+  try {
+    const t = h.server.traffic();
+    hostTrafficClosed = { in: hostTrafficClosed.in + t.in, out: hostTrafficClosed.out + t.out };
+  } catch {
+    /* sem contador */
+  }
+}
+
 async function supersede(current, pointer) {
   if (!isLive(current)) return;
   hosts.delete(current.id);
+  noteClosedTraffic(current);
   if (current.watch) clearInterval(current.watch);
   if (current.tunnel) current.tunnel.stop();
   await current.server.close().catch(() => {});
@@ -454,6 +466,7 @@ async function stopHost(roomId) {
   if (current.server.announceLeaving) await current.server.announceLeaving().catch(() => {});
   if (!isLive(current)) return;
   hosts.delete(roomId);
+  noteClosedTraffic(current);
   if (current.watch) clearInterval(current.watch);
   if (current.tunnel) current.tunnel.stop();
   await current.server.close().catch(() => {});
@@ -574,6 +587,27 @@ ipcMain.handle('host:open', async (_event, roomId) => {
 
 ipcMain.handle('host:list', () => listHosted());
 
+// ---------- uso de disco e de internet ----------
+let diskCache = { at: 0, data: null };
+ipcMain.handle('usage:disk', async () => {
+  if (diskCache.data && Date.now() - diskCache.at < 30000) return diskCache.data;
+  const data = await usage.diskReport({ hostRoot: hostRoot(), backupsRoot: path.join(app.getPath('userData'), 'backups') });
+  diskCache = { at: Date.now(), data };
+  return data;
+});
+// tráfego que passou pelos meus servidores desde que o app abriu (soma das salas que hospedo)
+ipcMain.handle('usage:host', () => {
+  let i = 0;
+  let o = 0;
+  for (const h of hosts.values()) {
+    const t = h.server.traffic ? h.server.traffic() : { in: 0, out: 0 };
+    i += t.in;
+    o += t.out;
+  }
+  const closed = hostTrafficClosed;
+  return { in: i + closed.in, out: o + closed.out, rooms: hosts.size };
+});
+
 
 // ---------- cópia da sala e migração de host ----------
 // Todo membro guarda uma cópia (sem tokens nem convites) de cada sala em que está. Se o host sumir,
@@ -593,16 +627,16 @@ function stopBackup(roomId) {
   }
 }
 
-function startBackup({ url, token, roomId }) {
+function startBackup({ url, token, roomId, maxFileBytes = Infinity }) {
   const prev = backupJobs.get(roomId);
-  if (prev && prev.url === url && prev.token === token) return;
+  if (prev && prev.url === url && prev.token === token && prev.maxFileBytes === maxFileBytes) return;
   stopBackup(roomId);
-  const job = { roomId, url, token, running: false, timer: null };
+  const job = { roomId, url, token, maxFileBytes, running: false, timer: null };
   const tick = async () => {
     if (job.running) return;
     job.running = true;
     try {
-      await backup.syncOnce({ dir: backupDir(roomId), url: job.url, token: job.token });
+      await backup.syncOnce({ dir: backupDir(roomId), url: job.url, token: job.token, maxFileBytes: job.maxFileBytes });
       const d = backup.describe(backupDir(roomId));
       backupInfos.set(roomId, { roomId, at: d ? d.at : Date.now(), error: null });
     } catch (e) {
@@ -622,7 +656,8 @@ function startBackup({ url, token, roomId }) {
 ipcMain.handle('backup:start', (_event, args = {}) => {
   if (!roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return false;
   if (hosts.has(args.roomId)) return false; // a sala que eu mesmo hospedo não precisa de cópia
-  startBackup(args);
+  const cap = Number(args.maxFileBytes);
+  startBackup({ url: args.url, token: args.token, roomId: args.roomId, maxFileBytes: Number.isFinite(cap) && cap >= 0 ? cap : Infinity });
   return true;
 });
 ipcMain.handle('backup:sync-now', async (_event, roomId) => {

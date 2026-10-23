@@ -269,6 +269,7 @@ async function createConcordoServer(opts = {}) {
   async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Timing-Allow-Origin', '*'); // deixa o app medir quanto cada arquivo baixado pesou
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
@@ -516,6 +517,9 @@ async function createConcordoServer(opts = {}) {
     throw httpError(404, 'rota não encontrada');
   }
 
+  // Tráfego que passa por este servidor (HTTP + WebSocket, tudo que vem do túnel), somado quando cada conexão fecha.
+  let trafficDone = { in: 0, out: 0 };
+  const sockets = new Set();
   const server = http.createServer((req, res) => {
     handle(req, res).catch((e) => {
       if (res.headersSent) return res.destroy();
@@ -527,6 +531,23 @@ async function createConcordoServer(opts = {}) {
   server.requestTimeout = 30 * 60 * 1000; // uploads grandes em conexões lentas
 
   // ---- WebSocket ----
+  server.on('connection', (sock) => {
+    sockets.add(sock);
+    sock.on('close', () => {
+      sockets.delete(sock);
+      trafficDone = { in: trafficDone.in + sock.bytesRead, out: trafficDone.out + sock.bytesWritten };
+    });
+  });
+  const traffic = () => {
+    let i = trafficDone.in;
+    let o = trafficDone.out;
+    for (const sock of sockets) {
+      i += sock.bytesRead;
+      o += sock.bytesWritten;
+    }
+    return { in: i, out: o };
+  };
+
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
@@ -713,6 +734,7 @@ async function createConcordoServer(opts = {}) {
     owner,
     makeCode,
     announceLeaving,
+    traffic,
     close,
   };
 }

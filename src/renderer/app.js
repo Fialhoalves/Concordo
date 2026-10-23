@@ -11,6 +11,20 @@
   // ícones do kit (SVG inline, herdam a cor do texto)
   const mascot = (name, size, alt = '') => h('img', { class: 'mascot', src: `assets/mascot/${name}.png`, width: size, height: size, alt, draggable: 'false' });
   const sfx = (name) => window.ConcordoSounds && window.ConcordoSounds.play(name);
+
+  // ---- medidor de internet: só conta tráfego que sai da máquina (conexões locais do próprio host não contam) ----
+  const Meter = window.ConcordoMeter;
+  const isLocalUrl = (u) => /^(https?|wss?):\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(String(u || ''));
+  const byteLen = (d) => (typeof d === 'string' ? new TextEncoder().encode(d).length : (d && (d.byteLength || d.size)) || 0);
+  function meterWs(ws, url) {
+    if (!Meter || isLocalUrl(url)) return;
+    const send = ws.send.bind(ws);
+    ws.send = (d) => {
+      Meter.add('chat', 'up', byteLen(d));
+      return send(d);
+    };
+    ws.addEventListener('message', (ev) => Meter.add('chat', 'down', byteLen(ev.data)));
+  }
   const ico = (name, size = 20, cls) => window.ConcordoIcons.icon(name, { size, class: cls });
 
   // ============================================================
@@ -208,11 +222,13 @@
     if (token) headers.Authorization = 'Bearer ' + token;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     let res;
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    if (Meter && !isLocalUrl(base)) Meter.add('chat', 'up', byteLen(payload) + 300);
     try {
       res = await fetch(base + route, {
         method,
         headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: payload,
       });
     } catch {
       throw Object.assign(new Error('Não consegui conectar ao servidor. O host está com o Concordo aberto?'), { network: true });
@@ -691,6 +707,7 @@
     ui.stage = h('div', { class: 'stage' });
     ui.voicePanel = h('div', { class: 'voice-panel', hidden: true });
     ui.heirNote = h('div', { class: 'heir-note', hidden: true });
+    ui.meter = h('button', { class: 'meter', type: 'button', 'data-act': 'usage', title: 'Uso de internet e de disco (clique para ver os detalhes)', onclick: openUsage });
     ui.takeover = h('div', { class: 'takeover', hidden: true });
     ui.main = h('div', { class: 'main' },
       h('div', { class: 'main-head' }, ui.chName,
@@ -737,6 +754,7 @@
             ui.memberList),
           ui.voicePanel,
           ui.heirNote,
+          ui.meter,
           meBar),
         ui.main),
     );
@@ -864,6 +882,7 @@
       let ws;
       try {
         ws = new WebSocket(c.info.url.replace(/^http/i, 'ws') + '/ws?token=' + encodeURIComponent(c.info.token));
+        meterWs(ws, c.info.url);
       } catch {
         return later();
       }
@@ -871,7 +890,7 @@
       ws.onopen = () => {
         c.retry = 0;
         if (!c.info.local && keepCopy() && bridge.backupStart) {
-          bridge.backupStart({ url: c.info.url, token: c.info.token, roomId: id }).catch(() => {});
+          bridge.backupStart({ url: c.info.url, token: c.info.token, roomId: id, maxFileBytes: copyCap() }).catch(() => {});
         }
       };
       ws.onmessage = (ev) => {
@@ -1717,6 +1736,7 @@
       };
 
       const xhr = new XMLHttpRequest();
+      if (Meter && !isLocalUrl(S.session.url)) Meter.add('chat', 'up', file.size);
       xhr.open('POST', `${S.session.url}/api/channels/${channel}/upload?name=${encodeURIComponent(file.name)}`);
       xhr.setRequestHeader('Authorization', 'Bearer ' + S.session.token);
       xhr.upload.onprogress = (e) => {
@@ -1749,6 +1769,7 @@
     closeSocket();
     const s = S.session;
     const ws = new WebSocket(s.url.replace(/^http/i, 'ws') + '/ws?token=' + encodeURIComponent(s.token));
+    meterWs(ws, s.url);
     S.ws = ws;
     setConn('connecting');
 
@@ -1937,6 +1958,125 @@
   }
 
   // ============================================================
+  // uso de internet e de disco (indicador no canto + detalhes)
+  // ============================================================
+  const meterOn = () => LS.get('concordo.meter', true) !== false;
+  let meterTicks = 0;
+  let voiceMid = 0;
+  let diskInfo = null;
+
+  async function refreshDisk() {
+    if (!bridge.usageDisk) return;
+    try {
+      diskInfo = await bridge.usageDisk();
+    } catch {
+      /* sem leitura de disco */
+    }
+  }
+
+  function renderMeterChip() {
+    const el = S.ui && S.ui.meter;
+    if (!el) return;
+    el.hidden = !meterOn();
+    if (el.hidden || !Meter) return;
+    const r = Meter.rate();
+    el.replaceChildren(
+      h('span', { class: 'meter-rate' }, '↓ ' + Meter.speed(r.down)),
+      h('span', { class: 'meter-rate' }, '↑ ' + Meter.speed(r.up)),
+      diskInfo ? h('span', { class: 'meter-disk' }, Meter.bytes(diskInfo.total) + ' em disco') : null);
+  }
+
+  async function meterTick() {
+    if (!Meter) return;
+    meterTicks += 1;
+    const c = S.voice && S.voice.client;
+    if (c && c.traffic) {
+      if (!c.__mid) c.__mid = ++voiceMid;
+      Meter.absolute('voice', 'c' + c.__mid, c.traffic());
+    }
+    if (bridge.usageHost && meterTicks % 3 === 0 && S.hostedList.some((r) => r.running)) {
+      try {
+        const t = await bridge.usageHost();
+        Meter.absolute('host', 'main', { up: t.out, down: t.in });
+      } catch {
+        /* sem servidor */
+      }
+    }
+    if (meterTicks % 30 === 1 && meterOn()) refreshDisk().then(renderMeterChip);
+    Meter.sample();
+    renderMeterChip();
+  }
+
+  function startMeter() {
+    if (!Meter) return;
+    try {
+      // quanto cada arquivo/imagem/resposta baixada pesou (o servidor libera a medição com Timing-Allow-Origin)
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          if (!/^https?:/i.test(e.name) || isLocalUrl(e.name)) continue;
+          Meter.add('chat', 'down', e.transferSize || e.encodedBodySize || 0);
+        }
+      }).observe({ type: 'resource' });
+    } catch {
+      /* sem PerformanceObserver */
+    }
+    setInterval(meterTick, 2000);
+    window.addEventListener('beforeunload', () => Meter.flush());
+  }
+
+  function openUsage() {
+    if (!Meter) return;
+    refreshDisk().then(() => {
+      if (document.querySelector('[data-role="usage-modal"]')) refreshUsageBody();
+    });
+    const body = h('div', { 'data-role': 'usage-body' });
+    const close = modal([
+      h('div', { 'data-role': 'usage-modal' }),
+      h('h3', null, 'Uso de internet e de disco'),
+      body,
+      h('div', { class: 'row end', style: { marginTop: '14px' } },
+        h('button', { class: 'btn ghost', 'data-act': 'hide-meter', onclick: () => {
+          LS.set('concordo.meter', false);
+          renderMeterChip();
+          close();
+          toast('Indicador oculto. Para mostrar de novo: Configurações → Aplicativo.', 'ok');
+        } }, 'Ocultar indicador'),
+        h('button', { class: 'btn primary', onclick: () => close() }, 'Fechar')),
+    ]);
+    function refreshUsageBody() {
+      const snap = Meter.snapshot();
+      const row = (label, o) => h('tr', null,
+        h('td', null, label),
+        h('td', null, '↓ ' + Meter.bytes(o.down)),
+        h('td', null, '↑ ' + Meter.bytes(o.up)));
+      const names = { chat: 'Mensagens e arquivos', voice: 'Voz, vídeo e tela', host: 'Servidor das salas que hospedo' };
+      const part = (title, data) => h('div', null,
+        h('h4', { class: 'sub' }, title),
+        h('table', { class: 'usage-table' },
+          ...Meter.KINDS.filter((k) => k !== 'host' || data.host.up || data.host.down).map((k) => row(names[k], data[k])),
+          Object.assign(row('Total', Meter.sum(data)), { className: 'total' })));
+      body.replaceChildren(
+        h('p', { class: 'hint' }, 'Agora: ↓ ' + Meter.speed(snap.rate.down) + ' · ↑ ' + Meter.speed(snap.rate.up) + '. Os valores são estimativas do que o próprio Concordo contou.'),
+        part('Desde que abriu o app', snap.session),
+        part('Hoje', snap.today),
+        part('Este mês', snap.month),
+        h('h4', { class: 'sub' }, 'Disco' + (diskInfo ? ` — ${Meter.bytes(diskInfo.total)}` : '')),
+        diskInfo && diskInfo.rooms.length
+          ? h('table', { class: 'usage-table' }, ...diskInfo.rooms.map((r) => h('tr', null,
+              h('td', null, r.name || r.roomId),
+              h('td', null, r.hosted ? 'hospedada ' + Meter.bytes(r.hosted) : ''),
+              h('td', null, r.copy ? 'cópia ' + Meter.bytes(r.copy) : ''))))
+          : h('p', { class: 'hint' }, 'Nada guardado ainda.'),
+        h('p', { class: 'hint' }, 'Cópias guardam as salas dos amigos neste computador. Em Configurações dá para limitar o tamanho dos anexos guardados nelas.'));
+    }
+    refreshUsageBody();
+    const timer = setInterval(() => {
+      if (!document.body.contains(body)) return clearInterval(timer);
+      refreshUsageBody();
+    }, 2000);
+  }
+
+  // ============================================================
   // sucessor: cópia da sala e migração de host
   // ============================================================
   // Todo membro guarda uma cópia da sala. Se o host some, assume quem tem cópia e vem primeiro na ordem de sucessão;
@@ -1944,11 +2084,13 @@
   const myRank = () => (S.session && !S.isHost ? S.succession.indexOf(S.session.user.id) : -1);
   const iAmHeir = () => myRank() === 0;
   const keepCopy = () => LS.get('concordo.keepCopy', true) !== false;
+  // anexos que entram na cópia: 'all' | '10mb' (padrão) | 'none'
+  const copyCap = () => ({ all: undefined, '10mb': 10 * 1024 * 1024, none: 0 }[LS.get('concordo.copyFiles', '10mb')]);
 
   function syncBackup() {
     if (!bridge.backupStart || !S.session) return;
     if (!S.isHost && keepCopy()) {
-      const args = { url: S.session.url, token: S.session.token, roomId: S.session.room.id };
+      const args = { url: S.session.url, token: S.session.token, roomId: S.session.room.id, maxFileBytes: copyCap() };
       const start = () => bridge.backupStart(args).catch(() => {});
       if (bridge.backupReconcile && S.reconciledUrl !== args.url) {
         // primeiro devolve ao host o que só a minha cópia tem (ele pode ter sido reaberto de uma cópia mais velha)
@@ -2562,6 +2704,21 @@
       syncBackground();
       if (S.session) syncBackup();
     });
+    const meterBox = h('input', { type: 'checkbox', 'data-role': 'meter-on' });
+    meterBox.checked = meterOn();
+    meterBox.addEventListener('change', () => {
+      LS.set('concordo.meter', meterBox.checked);
+      renderMeterChip();
+    });
+    const capSel = h('select', { class: 'input', 'data-role': 'copy-files' },
+      h('option', { value: '10mb' }, 'Anexos até 10 MB (recomendado)'),
+      h('option', { value: 'all' }, 'Todos os anexos (usa mais disco e internet)'),
+      h('option', { value: 'none' }, 'Nenhum anexo (só mensagens)'));
+    capSel.value = LS.get('concordo.copyFiles', '10mb');
+    capSel.addEventListener('change', () => {
+      LS.set('concordo.copyFiles', capSel.value);
+      if (S.session) syncBackup();
+    });
     const appCheck = (key, label) => {
       const box = h('input', { type: 'checkbox', 'data-role': 'app-' + key, disabled: true });
       if (bridge.getSettings) {
@@ -2603,7 +2760,9 @@
       h('h4', { class: 'sub' }, 'Aplicativo'),
       appCheck('closeToTray', 'Ao fechar a janela, continuar na bandeja do sistema'),
       h('label', { class: 'check' }, copyBox, h('span', null, 'Guardar uma cópia das salas neste computador (permite assumir a sala se o host sair; usa disco)')),
+      h('div', { class: 'field' }, h('label', null, 'Anexos guardados nas cópias'), capSel),
       appCheck('autoStart', 'Abrir o Concordo junto com o Windows (em segundo plano)'),
+      h('label', { class: 'check' }, meterBox, h('span', null, 'Mostrar o uso de internet e de disco no canto da barra lateral')),
       h('div', { class: 'field' }, h('label', null, 'Avisar de mensagens novas'), notifySel),
       h('label', { class: 'check' }, soundsBox, h('span', null, 'Sons de chamada (entrar, sair, mutar, câmera, tela)')),
       h('div', { class: 'field' }, h('label', null, 'Volume dos sons'), soundVol),
@@ -2972,6 +3131,7 @@
       renderBanner();
     });
     bridge.on('deeplink', handleDeepLink);
+    startMeter();
     window.addEventListener('focus', () => {
       S.away = 0;
       updateBadge();
