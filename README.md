@@ -3,9 +3,9 @@
 Bate-papo entre amigos que roda no seu PC. Sem cadastro e sem servidor de terceiros:
 quem hospeda a sala é o computador de um de vocês, e os outros entram por um código de convite.
 
-**O que já funciona (v0.1):** texto em tempo real, canais, envio de arquivos e imagens, convites por código ou link,
-lista de membros com presença, notificações, atualização automática pelo GitHub.
-**Ainda não tem:** voz, vídeo e compartilhamento de tela (próximo passo, veja o [Roadmap](#roadmap)).
+**O que já funciona:** texto em tempo real, canais, envio de arquivos e imagens, convites por código ou link,
+lista de membros com presença, notificações, atualização automática pelo GitHub e, desde a v0.2,
+**canais de voz com microfone, câmera e compartilhamento de tela**.
 
 ## Como usar
 
@@ -23,6 +23,14 @@ lista de membros com presença, notificações, atualização automática pelo G
    o host manda um **código para quem já entrou** (botão no painel de convite) e você cola em **Entrar**:
    ele reconhece você, sem gastar convite.
 
+**Voz, vídeo e tela**
+
+1. O dono cria um canal em **+ → Voz e vídeo** (já vem um canal `voz`). Clique no canal e em **Entrar na chamada**.
+2. Na barra que aparece embaixo da lista de canais: 🎙️ silenciar, 🎧 ensurdecer, 📷 câmera, 🖥️ compartilhar tela, 📞 sair.
+3. Clique num vídeo para destacá-lo; o botão ⛶ coloca em tela cheia.
+4. Ao compartilhar a tela, escolha a tela ou janela. O som do computador é opcional e desligado por padrão: ele inclui a
+   voz dos amigos, que ouviriam eco. Use fones se ligar.
+
 Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo no computador do host.
 
 ## Como funciona
@@ -39,6 +47,8 @@ Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo 
   (grátis, sem conta). O `cloudflared` vai embutido no instalador.
 - O código de convite é `concordo://join/<dados>` e carrega o endereço do túnel, o id da sala e um convite
   de uso limitado e validade de 24 h. Cada pessoa recebe um token próprio ao entrar.
+- Voz e vídeo **não passam pelo túnel**: são WebRTC direto entre os apps (malha, cada pessoa envia para todas as outras).
+  O servidor da sala só repassa a sinalização. O endereço IP de cada participante fica visível para os outros da chamada.
 - Mensagens e nomes são exibidos como texto puro (nada de HTML). Arquivos nunca são servidos como páginas.
 
 ## Limites conhecidos
@@ -49,7 +59,23 @@ Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo 
 - **Arquivos:** até 90 MB cada (o plano grátis da Cloudflare corta uploads perto de 100 MB).
 - **Windows avisa "app desconhecido"** na primeira instalação, porque o instalador não é assinado.
   Clique em *Mais informações → Executar assim mesmo*. As atualizações seguintes não pedem isso de novo.
+- **Chamadas:** máximo de 8 pessoas por canal de voz, mas por ser malha o conforto real é de 4 a 5 (quem compartilha tela
+  envia o vídeo para cada pessoa). Em redes muito restritivas (CGNAT/NAT simétrico) a conexão direta pode falhar; nesse caso
+  o host pode configurar um servidor TURN (veja abaixo).
 - Pensado para **grupos pequenos de amigos de confiança**. Quem tem o convite entra; o dono da sala pode remover membros.
+
+### Servidor TURN (opcional)
+
+Por padrão o Concordo usa servidores STUN públicos (Cloudflare e Google) para os computadores se acharem. Se alguém não
+conseguir entrar na chamada, o host pode iniciar o app com um TURN próprio (ex.: coturn), definindo antes a variável
+`CONCORDO_ICE_SERVERS` com uma lista JSON, por exemplo no PowerShell:
+
+```powershell
+$env:CONCORDO_ICE_SERVERS='[{"urls":"turn:meu-servidor:3478","username":"usuario","credential":"senha"}]'
+& "$env:LOCALAPPDATA\Programs\Concordo\Concordo.exe"
+```
+
+A lista é entregue a todos os membros pelo servidor da sala.
 
 ## Desenvolvimento
 
@@ -94,6 +120,6 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 
 ## Roadmap
 
-1. **Voz, vídeo e compartilhamento de tela** com WebRTC direto entre os apps (o servidor só faz a sinalização).
+1. ~~Voz, vídeo e compartilhamento de tela~~ (feito na v0.2). Ideias seguintes: escolher microfone/saída de som, SFU opcional para salas maiores.
 2. Código de convite que não precisa ser reenviado (endereço fixo via *named tunnel*).
 3. Migração de host: outro membro assume a sala quando o host sai.

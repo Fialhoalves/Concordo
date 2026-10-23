@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, desktopCapturer } = require('electron');
 const path = require('node:path');
 const { createConcordoServer } = require('../server');
 const tunnel = require('./tunnel');
@@ -43,6 +43,67 @@ function deliverDeepLink(link) {
     pendingDeepLink = link;
   }
 }
+
+// ---------- voz, vídeo e tela ----------
+// Servidores STUN/TURN próprios: CONCORDO_ICE_SERVERS='[{"urls":"turn:host:3478","username":"u","credential":"p"}]'
+function iceFromEnv() {
+  const raw = process.env.CONCORDO_ICE_SERVERS;
+  if (!raw) return undefined;
+  try {
+    const list = JSON.parse(raw);
+    if (Array.isArray(list)) return list;
+  } catch {
+    /* ignora valor inválido */
+  }
+  console.warn('CONCORDO_ICE_SERVERS inválido; usando os servidores padrão.');
+  return undefined;
+}
+
+const isAppPage = (url) => typeof url === 'string' && url.startsWith('file://');
+const ALLOWED_PERMISSIONS = new Set(['media', 'display-capture', 'notifications', 'clipboard-sanitized-write', 'fullscreen']);
+
+// A interface escolhe a tela no próprio seletor; o Electron só libera a captura da fonte escolhida.
+let pendingScreen = null; // { id, audio, at }
+
+function setupMedia() {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    callback(ALLOWED_PERMISSIONS.has(permission) && isAppPage(details && details.requestingUrl));
+  });
+  ses.setPermissionCheckHandler((wc, permission, origin, details) =>
+    ALLOWED_PERMISSIONS.has(permission) && isAppPage((details && details.requestingUrl) || origin));
+
+  ses.setDisplayMediaRequestHandler(async (request, callback) => {
+    const pending = pendingScreen;
+    pendingScreen = null;
+    if (!pending || Date.now() - pending.at > 30000) return callback({});
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+      const source = sources.find((x) => x.id === pending.id);
+      if (!source) return callback({});
+      callback(pending.audio ? { video: source, audio: 'loopback' } : { video: source });
+    } catch {
+      callback({});
+    }
+  });
+}
+
+ipcMain.handle('screen:sources', async () => {
+  const own = mainWindow ? mainWindow.getMediaSourceId() : null;
+  const sources = await desktopCapturer.getSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 320, height: 180 },
+    fetchWindowIcons: false,
+  });
+  return sources
+    .filter((x) => x.id !== own && x.name)
+    .map((x) => ({ id: x.id, name: x.name, thumbnail: x.thumbnail.toDataURL() }));
+});
+
+ipcMain.handle('screen:prepare', (_event, sel) => {
+  if (!sel || typeof sel.id !== 'string') throw new Error('fonte inválida');
+  pendingScreen = { id: sel.id, audio: !!sel.audio, at: Date.now() };
+});
 
 // ---------- janela ----------
 function createWindow() {
@@ -157,6 +218,7 @@ ipcMain.handle('host:start', async (_event, opts = {}) => {
       ownerName: opts.nickname || 'Anfitrião',
       getPublicUrl: () => (host ? host.publicUrl : null),
       version: app.getVersion(),
+      iceServers: iceFromEnv(),
     });
     host = {
       server,
@@ -246,6 +308,7 @@ if (!app.requestSingleInstanceLock()) {
       Menu.setApplicationMenu(null);
       app.setAsDefaultProtocolClient(PROTOCOL);
     }
+    setupMedia();
     createWindow();
     setupUpdater();
     app.on('activate', () => {

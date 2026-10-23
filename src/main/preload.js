@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('concordo', {
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
   download: (url) => ipcRenderer.invoke('app:download', url),
   takeDeepLink: () => ipcRenderer.invoke('app:take-deeplink'),
+  screenSources: () => ipcRenderer.invoke('screen:sources'),
+  screenPrepare: (sel) => ipcRenderer.invoke('screen:prepare', sel),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   on(channel, callback) {
     if (!EVENTS.has(channel)) return () => {};

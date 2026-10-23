@@ -182,6 +182,8 @@
     hasConnected: false,
     ui: {},
     update: null,
+    ice: [],
+    voice: { rooms: {}, client: null, channel: null, joining: null, focus: null },
   };
 
   // ============================================================
@@ -493,8 +495,11 @@
 
     const addChannelBtn = h('button', { class: 'btn ghost', title: 'Novo canal', onclick: openChannelModal }, '+');
 
+    ui.stage = h('div', { class: 'stage' });
+    ui.voicePanel = h('div', { class: 'voice-panel', hidden: true });
     ui.main = h('div', { class: 'main' },
       h('div', { class: 'main-head' }, ui.chName, ui.conn),
+      ui.stage,
       ui.messages,
       h('div', { class: 'composer-wrap' },
         ui.uploadStatus,
@@ -525,6 +530,7 @@
             ui.channelList,
             h('div', { class: 'section' }, h('span', null, 'Membros')),
             ui.memberList),
+          ui.voicePanel,
           meBar),
         ui.main),
     );
@@ -605,6 +611,8 @@
     S.users = new Map(st.users.map((u) => [u.id, u]));
     S.online = new Set(st.online);
     S.limits = st.limits;
+    S.ice = st.ice || [];
+    S.voice.rooms = st.voice || {};
     S.session.user = st.you;
     S.session.room = st.room;
     S.ui.roomName.textContent = st.room.name;
@@ -617,10 +625,26 @@
     S.ui.channelList.replaceChildren(
       ...S.channels.map((ch) => {
         const unread = S.unread.get(ch.id) || 0;
-        return h('div', {
-          class: 'channel' + (ch.id === S.current ? ' active' : ''),
+        const isVoice = ch.type === 'voice';
+        const row = h('div', {
+          class: 'channel' + (ch.id === S.current ? ' active' : '') + (isVoice ? ' voice' : ''),
+          'data-channel': ch.id,
           onclick: () => selectChannel(ch.id),
-        }, h('span', { class: 'hash' }, '#'), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
+        }, h('span', { class: 'hash' }, isVoice ? '🔊' : '#'), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
+        if (!isVoice) return row;
+        const people = S.voice.rooms[ch.id] || [];
+        return h('div', null, row,
+          ...people.map((p) => {
+            const u = S.users.get(p.id);
+            const name = u ? u.name : '?';
+            return h('div', {
+              class: 'voice-user' + (voiceSpeaking(p.id) ? ' speaking' : ''),
+              'data-user': p.id,
+            }, avatar(p.id, name), h('span', { class: 'name' }, name),
+              p.screen ? h('span', { class: 'live', title: 'Compartilhando a tela' }, 'AO VIVO') : null,
+              p.cam ? h('span', { title: 'Câmera ligada' }, '📷') : null,
+              p.deafened ? h('span', { title: 'Sem áudio' }, '🎧✕') : p.muted ? h('span', { title: 'Microfone desligado' }, '🎙️✕') : null);
+          }));
       }),
     );
   }
@@ -665,7 +689,13 @@
     S.unread.delete(id);
     renderChannels();
     const ch = S.channels.find((c) => c.id === id);
-    S.ui.chName.textContent = '# ' + (ch ? ch.name : id);
+    const isVoice = !!ch && ch.type === 'voice';
+    S.ui.chName.textContent = (isVoice ? '🔊 ' : '# ') + (ch ? ch.name : id);
+    S.ui.main.classList.toggle('is-voice', isVoice);
+    if (isVoice) {
+      renderStage();
+      return;
+    }
     S.ui.messages.replaceChildren();
     if (S.msgs.has(id)) renderMessages();
     else {
@@ -883,6 +913,10 @@
     ws.onclose = (ev) => {
       if (S.ws !== ws) return;
       S.ws = null;
+      if (S.voice.client) {
+        leaveVoice({ silent: true, local: true });
+        toast('A conexão caiu e você saiu da chamada de voz.', 'error');
+      }
       if (S.leaving) return;
       if (ev.code === 4001) {
         toast('Você foi removido(a) desta sala.', 'error');
@@ -951,11 +985,286 @@
       case 'channel':
         if (!S.channels.some((c) => c.id === d.channel.id)) S.channels.push(d.channel);
         return renderChannels();
+      case 'voice':
+        S.voice.rooms = d.rooms || {};
+        voiceRoomChanged();
+        return;
+      case 'voice_joined':
+        return onVoiceJoined(d);
+      case 'voice_left':
+        if (S.voice.client) leaveVoice({ silent: true, local: true });
+        return;
+      case 'rtc':
+        if (S.voice.client) S.voice.client.handleSignal(d.from, d.data);
+        return;
       case 'error':
+        S.voice.joining = null;
+        renderStage();
         return toast(d.message, 'error');
       default:
     }
   }
+
+  // ============================================================
+  // voz, vídeo e compartilhamento de tela
+  // ============================================================
+  function wsSend(obj) {
+    if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(obj));
+  }
+
+  const voiceSpeaking = (id) => !!(S.voice.client && S.voice.client.speaking(id));
+  const voiceMembers = (channel) => S.voice.rooms[channel] || [];
+  const nameOf = (id) => (S.users.get(id) ? S.users.get(id).name : '?');
+
+  let voiceRenderQueued = false;
+  function scheduleVoiceRender() {
+    if (voiceRenderQueued) return;
+    voiceRenderQueued = true;
+    requestAnimationFrame(() => {
+      voiceRenderQueued = false;
+      if (!S.ui.channelList) return;
+      renderChannels();
+      renderVoicePanel();
+      renderStage();
+    });
+  }
+
+  function voiceRoomChanged() {
+    const v = S.voice;
+    if (v.client && v.channel) {
+      const me = S.session.user.id;
+      const ids = voiceMembers(v.channel).map((p) => p.id);
+      if (!ids.includes(me) && !v.joining) {
+        // o servidor não me tem mais na sala (ex.: entrei por outra janela)
+        return leaveVoice({ silent: true, local: true });
+      }
+      v.client.syncRoom(ids.filter((id) => id !== me));
+    }
+    scheduleVoiceRender();
+  }
+
+  function joinVoice(channel) {
+    const v = S.voice;
+    if (v.joining) return;
+    if (v.client && v.channel === channel) return;
+    if (v.client) leaveVoice({ silent: true, local: true });
+    v.joining = channel;
+    wsSend({ t: 'voice_join', channel });
+    scheduleVoiceRender();
+  }
+
+  async function onVoiceJoined(d) {
+    const v = S.voice;
+    if (v.client) leaveVoice({ silent: true, local: true });
+    v.joining = null;
+    v.channel = d.channel;
+    v.focus = null;
+    v.client = window.ConcordoVoice.createVoiceClient({
+      myId: S.session.user.id,
+      send: (to, data) => wsSend({ t: 'rtc', to, data }),
+      getIce: () => S.ice,
+      getState: (id) => voiceMembers(v.channel).find((p) => p.id === id),
+      onChange: scheduleVoiceRender,
+      onLocalState: (st) => wsSend({ t: 'voice_state', ...st }),
+    });
+    const client = v.client;
+    await client.join(d.channel, d.peers || []);
+    if (v.client !== client) return;
+    const st = client.state();
+    if (!st.hasMic) toast(st.micError || 'Sem microfone: você só vai ouvir.', 'error');
+    scheduleVoiceRender();
+  }
+
+  function leaveVoice({ silent = false, local = false } = {}) {
+    const v = S.voice;
+    if (v.client) v.client.leave();
+    v.client = null;
+    v.channel = null;
+    v.joining = null;
+    v.focus = null;
+    for (const tile of v.tiles ? v.tiles.values() : []) {
+      const video = tile.querySelector('video');
+      if (video) video.srcObject = null;
+    }
+    v.tiles = new Map();
+    if (!local) wsSend({ t: 'voice_leave' });
+    if (!silent) toast('Você saiu da chamada.', 'ok');
+    if (S.ui.channelList) scheduleVoiceRender();
+  }
+
+  async function voiceAction(fn) {
+    try {
+      await fn();
+    } catch (e) {
+      if (!e.cancelled) toast(e.message, 'error');
+    }
+  }
+
+  function renderVoicePanel() {
+    const panel = S.ui.voicePanel;
+    if (!panel) return;
+    const v = S.voice;
+    const active = !!v.client;
+    panel.hidden = !active;
+    if (!active) return panel.replaceChildren();
+    const st = v.client.state();
+    const ch = S.channels.find((c) => c.id === v.channel);
+    const peers = v.client.peerIds();
+    const connected = peers.filter((id) => (v.client.peer(id) || {}).conn === 'connected').length;
+    const status = peers.length === 0 ? 'Sozinho(a) na sala' : connected === peers.length ? 'Conectado' : 'Conectando…';
+    const btn = (act, label, title, on, onclick, extra = '') =>
+      h('button', { class: 'vbtn' + (on ? ' on' : '') + extra, 'data-act': act, title, onclick }, label);
+    panel.replaceChildren(
+      h('div', { class: 'vstatus' },
+        h('span', { class: 'dot ' + (connected === peers.length ? 'ok' : 'wait') }),
+        h('div', null,
+          h('div', { class: 'vtitle' }, status),
+          h('div', { class: 'vsub' }, '🔊 ' + (ch ? ch.name : ''))),
+        ),
+      !st.hasMic ? h('div', { class: 'vwarn' }, 'Sem microfone — você só ouve.') : null,
+      h('div', { class: 'vbtns' },
+        btn('mute', st.muted ? '🔇' : '🎙️', st.muted ? 'Ligar microfone' : 'Silenciar microfone', st.muted,
+          () => v.client.setMuted(!st.muted), ' danger-on'),
+        btn('deafen', '🎧', st.deafened ? 'Voltar a ouvir' : 'Ensurdecer (não ouvir ninguém)', st.deafened,
+          () => v.client.setDeafened(!st.deafened), ' danger-on'),
+        btn('cam', '📷', st.cam ? 'Desligar câmera' : 'Ligar câmera', !!st.cam,
+          () => voiceAction(() => v.client.setCamera(!st.cam))),
+        btn('screen', '🖥️', st.screen ? 'Parar de compartilhar a tela' : 'Compartilhar tela', !!st.screen,
+          () => (st.screen ? v.client.stopScreen() : voiceAction(startScreenShare))),
+        btn('leave', '📞', 'Sair da chamada', false, () => leaveVoice(), ' leave')),
+    );
+  }
+
+  function tileFor(key) {
+    const v = S.voice;
+    if (!v.tiles) v.tiles = new Map();
+    let tile = v.tiles.get(key);
+    if (tile) return tile;
+    const video = h('video', { autoplay: true, playsinline: true, muted: true });
+    video.muted = true;
+    tile = h('div', { class: 'tile', 'data-key': key, onclick: () => {
+      v.focus = v.focus === key ? null : key;
+      renderStage();
+    } },
+      video,
+      h('div', { class: 'tile-avatar' }),
+      h('div', { class: 'tile-label' }),
+      h('button', { class: 'tile-full', title: 'Tela cheia', onclick: (e) => {
+        e.stopPropagation();
+        if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
+      } }, '⛶'));
+    v.tiles.set(key, tile);
+    return tile;
+  }
+
+  function fillTile(tile, { id, kind, stream, conn, entry }) {
+    const video = tile.querySelector('video');
+    if ((video.srcObject || null) !== (stream || null)) {
+      video.srcObject = stream || null;
+      if (stream) video.play().catch(() => {});
+    }
+    video.hidden = !stream;
+    const av = tile.querySelector('.tile-avatar');
+    av.hidden = !!stream;
+    if (!stream && !av.firstChild) av.append(avatar(id, nameOf(id), { big: true }));
+    tile.dataset.kind = kind;
+    tile.dataset.user = id;
+    tile.dataset.conn = conn;
+    tile.classList.toggle('speaking', kind === 'user' && voiceSpeaking(id));
+    tile.classList.toggle('screen', kind === 'screen');
+    const label = tile.querySelector('.tile-label');
+    const me = id === S.session.user.id;
+    const base = nameOf(id) + (me ? ' (você)' : '') + (kind === 'screen' ? ' — tela' : '');
+    const icons = kind === 'user' && entry ? (entry.deafened ? ' 🎧✕' : entry.muted ? ' 🎙️✕' : '') : '';
+    label.textContent = base + icons + (conn === 'connecting' ? ' · conectando…' : conn === 'failed' ? ' · sem conexão' : '');
+  }
+
+  function renderStage() {
+    const stage = S.ui.stage;
+    if (!stage) return;
+    const ch = S.channels.find((c) => c.id === S.current);
+    if (!ch || ch.type !== 'voice') return;
+    const v = S.voice;
+    const here = v.client && v.channel === ch.id;
+    if (!here) {
+      const people = voiceMembers(ch.id);
+      const full = people.length >= ((S.limits && S.limits.maxVoice) || 8);
+      stage.className = 'stage lobby';
+      stage.replaceChildren(
+        h('div', { class: 'lobby-card' },
+          h('div', { class: 'lobby-icon' }, '🔊'),
+          h('h2', null, ch.name),
+          h('p', { class: 'hint' }, people.length
+            ? people.map((p) => nameOf(p.id)).join(', ') + (people.length === 1 ? ' está aqui.' : ' estão aqui.')
+            : 'Ninguém na chamada ainda.'),
+          h('button', {
+            class: 'btn primary',
+            'data-act': 'join',
+            disabled: v.joining || full ? true : null,
+            onclick: () => joinVoice(ch.id),
+          }, v.joining === ch.id ? 'Entrando…' : full ? 'Sala cheia' : 'Entrar na chamada'),
+          h('p', { class: 'hint small' }, 'Voz e vídeo vão direto entre os computadores. Até 8 pessoas; fica melhor com poucas.')));
+      return;
+    }
+
+    const me = S.session.user.id;
+    const st = v.client.state();
+    const entries = voiceMembers(ch.id);
+    const wanted = [];
+    for (const p of entries) {
+      const mine = p.id === me;
+      const info = mine ? { conn: 'self', cam: st.cam, screen: st.screen } : v.client.peer(p.id) || { conn: 'connecting' };
+      wanted.push({ key: p.id + ':user', id: p.id, kind: 'user', stream: info.cam || null, conn: info.conn, entry: p });
+      if (info.screen) wanted.push({ key: p.id + ':screen', id: p.id, kind: 'screen', stream: info.screen, conn: info.conn, entry: p });
+    }
+    if (v.focus && !wanted.some((w) => w.key === v.focus)) v.focus = null;
+    const nodes = wanted.map((w) => {
+      const tile = tileFor(w.key);
+      fillTile(tile, w);
+      tile.classList.toggle('focused', v.focus === w.key);
+      return tile;
+    });
+    for (const key of [...v.tiles.keys()]) {
+      if (!wanted.some((w) => w.key === key)) {
+        const gone = v.tiles.get(key);
+        const video = gone.querySelector('video');
+        if (video) video.srcObject = null;
+        v.tiles.delete(key);
+      }
+    }
+    stage.className = 'stage live' + (v.focus ? ' has-focus' : '') + ' n' + Math.min(nodes.length, 9);
+    const same = nodes.length === stage.children.length && nodes.every((n, i) => stage.children[i] === n);
+    if (!same) stage.replaceChildren(...nodes);
+  }
+
+  async function startScreenShare() {
+    const v = S.voice;
+    if (!bridge.screenSources) return v.client.startScreen({ audio: false });
+    const sources = await bridge.screenSources();
+    if (!sources.length) throw new Error('Não encontrei nenhuma tela ou janela para compartilhar.');
+    const audio = h('input', { type: 'checkbox', 'data-role': 'screen-audio' });
+    let close = null;
+    const pick = (src) => async () => {
+      close();
+      await voiceAction(async () => {
+        await bridge.screenPrepare({ id: src.id, audio: audio.checked });
+        await v.client.startScreen({ audio: audio.checked });
+      });
+    };
+    close = modal([
+      h('h3', null, 'Compartilhar tela'),
+      h('div', { class: 'source-grid' },
+        ...sources.map((src) =>
+          h('button', { class: 'source', 'data-source': src.id, onclick: pick(src) },
+            h('img', { src: src.thumbnail, alt: '' }),
+            h('span', null, src.name)))),
+      h('label', { class: 'check' }, audio, h('span', null, 'Compartilhar também o som do computador')),
+      h('div', { class: 'hint' }, 'O som do computador inclui a voz dos seus amigos, que podem ouvir eco. Use fones de ouvido.'),
+      h('div', { class: 'row end', style: { marginTop: '14px' } },
+        h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancelar')),
+    ]);
+  }
+
 
   // ============================================================
   // convites e canais (dono da sala)
@@ -1007,10 +1316,13 @@
 
   function openChannelModal() {
     const name = h('input', { class: 'input', maxlength: '24', placeholder: 'ex: jogos' });
+    const type = h('select', { class: 'input' },
+      h('option', { value: 'text' }, '# Texto'),
+      h('option', { value: 'voice' }, '🔊 Voz e vídeo'));
     const err = h('div', { class: 'hint' });
     const create = async () => {
       try {
-        await api('POST', '/api/channels', { name: name.value });
+        await api('POST', '/api/channels', { name: name.value, type: type.value });
         close();
       } catch (e) {
         err.className = 'hint error';
@@ -1022,6 +1334,7 @@
     });
     const close = modal([
       h('h3', null, 'Novo canal'),
+      h('div', { class: 'field' }, h('label', null, 'Tipo'), type),
       h('div', { class: 'field' }, h('label', null, 'Nome'), name),
       err,
       h('div', { class: 'row end', style: { marginTop: '14px' } },
@@ -1036,6 +1349,7 @@
   // ============================================================
   function teardownChat() {
     S.leaving = true;
+    if (S.voice.client) leaveVoice({ silent: true, local: true });
     closeSocket();
     S.session = null;
     S.isHost = false;
