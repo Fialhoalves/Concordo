@@ -175,3 +175,10 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 - **Bandeja do sistema:** fechar a janela deixa o Concordo rodando em segundo plano (ícone perto do relógio; botão direito → Sair). Configurações permite desligar isso e abrir junto com o Windows. Sair pela bandeja avisa se você está hospedando.
 - **Várias salas:** barra lateral com a sala que você hospeda e as salas dos amigos; clique para trocar sem derrubar a sua. Salas fora da tela mostram contador de mensagens novas e notificam. Limitação: a cópia de sucessor e a chamada de voz só funcionam na sala aberta.
 - **Erro 530:** quando o host fecha o app, a mensagem agora diz que a sala está offline em vez de "erro 530".
+
+## v0.9.0
+
+- **Passar a sala sem fechar o app:** Encerrar → "Passar a sala para <sucessor>". O sucessor assume na hora, os amigos reconectam sozinhos pelo endereço automático e voltam para a chamada. Fechar o app (ou sair pela bandeja) faz o mesmo se o sucessor estiver online.
+- **Onde ficam os dados:** mensagens e arquivos ficam no computador do host e numa cópia no computador do sucessor (atualizada a cada ~45 s e na hora da passagem). Os demais só guardam o que estão vendo na tela.
+- **Sons:** entrar/sair da chamada, outra pessoa entrar/sair, mutar, ensurdecer, câmera e tela, queda de conexão. Sintetizados no app, com liga/desliga e volume em Configurações.
+- **Chat:** responder, editar, apagar, fixar, buscar (todos os canais), @menções com sugestão e aviso só quando citam você, "fulano está digitando…".

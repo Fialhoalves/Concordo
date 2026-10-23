@@ -388,3 +388,90 @@ test('/api/me entrega o ponto de encontro só a membros e os códigos o levam ju
   const code = (await call(srv.owner.token, 'GET', '/api/session-code')).json.code;
   assert.equal(Invite.decode(code).rv, me.json.rv);
 });
+
+test('editar, apagar e fixar mensagens, com as regras de quem pode', async () => {
+  const a = await joinAs('Edita1');
+  const b = await joinAs('Edita2');
+  const wa = await connect(a.token);
+  const wb = await connect(b.token);
+  wa.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'texto errdo' }));
+  const m = (await waitFor(() => wb.events.find((e) => e.t === 'msg' && e.message.text === 'texto errdo'))).message;
+
+  assert.equal((await call(b.token, 'PATCH', `/api/messages/${m.id}`, { text: 'x' })).status, 403);
+  const ed = await call(a.token, 'PATCH', `/api/messages/${m.id}`, { text: 'texto certo' });
+  assert.equal(ed.status, 200);
+  assert.equal(ed.json.message.text, 'texto certo');
+  assert.ok(ed.json.message.editedAt);
+  const upd = await waitFor(() => wb.events.find((e) => e.t === 'msg_update' && e.message.id === m.id));
+  assert.equal(upd.message.text, 'texto certo');
+
+  const pin = await call(b.token, 'POST', `/api/messages/${m.id}/pin`);
+  assert.equal(pin.json.message.pinned, true);
+  assert.equal((await call(a.token, 'GET', '/api/channels/geral/pins')).json.messages.length >= 1, true);
+
+  assert.equal((await call(b.token, 'DELETE', `/api/messages/${m.id}`)).status, 403); // membro não apaga o dos outros
+  const del = await call(srv.owner.token, 'DELETE', `/api/messages/${m.id}`); // o dono pode
+  assert.equal(del.json.message.deleted, true);
+  assert.equal(del.json.message.text, '');
+  assert.equal((await call(a.token, 'GET', '/api/channels/geral/pins')).json.messages.some((x) => x.id === m.id), false);
+  const hist = (await call(a.token, 'GET', '/api/channels/geral/messages')).json.messages.find((x) => x.id === m.id);
+  assert.equal(hist.deleted, true);
+  wa.close();
+  wb.close();
+});
+
+test('resposta, menções e "digitando"', async () => {
+  const a = await joinAs('Cita1');
+  const b = await joinAs('Cita2');
+  const wa = await connect(a.token);
+  const wb = await connect(b.token);
+  wa.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'pergunta original' }));
+  const orig = (await waitFor(() => wb.events.find((e) => e.t === 'msg' && e.message.text === 'pergunta original'))).message;
+  wb.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'oi @Cita1, concordo!', replyTo: orig.id }));
+  const reply = (await waitFor(() => wa.events.find((e) => e.t === 'msg' && e.message.replyTo))).message;
+  assert.equal(reply.replyTo.id, orig.id);
+  assert.equal(reply.replyTo.text, 'pergunta original');
+  assert.deepEqual(reply.mentions, [a.user.id]);
+  wb.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'e @Cita10 não existe, nem @Cita1x' }));
+  const none = (await waitFor(() => wa.events.find((e) => e.t === 'msg' && e.message.text.startsWith('e @Cita10')))).message;
+  assert.equal(none.mentions, undefined);
+
+  wb.send(JSON.stringify({ t: 'typing', channel: 'geral' }));
+  const ty = await waitFor(() => wa.events.find((e) => e.t === 'typing'));
+  assert.equal(ty.user, b.user.id);
+  assert.equal(wb.events.some((e) => e.t === 'typing'), false); // não volta para quem digita
+  wa.close();
+  wb.close();
+});
+
+test('busca no histórico ignora acento e maiúsculas e pula mensagens apagadas', async () => {
+  const a = await joinAs('Busca1');
+  const wa = await connect(a.token);
+  wa.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'Reunião do Açaí amanhã' }));
+  await waitFor(() => wa.events.find((e) => e.t === 'msg' && e.message.text.includes('Açaí')));
+  const r = await call(a.token, 'GET', '/api/search?q=' + encodeURIComponent('amanha acai'));
+  assert.equal(r.json.messages.length, 0); // fora de ordem não casa; a busca é por trecho
+  const r2 = await call(a.token, 'GET', '/api/search?q=' + encodeURIComponent('reuniao do acai'));
+  assert.equal(r2.json.messages.length, 1);
+  const around = await call(a.token, 'GET', `/api/channels/geral/messages?around=${r2.json.messages[0].id}&limit=10`);
+  assert.ok(around.json.messages.some((x) => x.id === r2.json.messages[0].id));
+  wa.close();
+});
+
+test('o dono avisa que vai sair e o sucessor online recebe o aviso', async () => {
+  const a = await joinAs('Herdeiro1');
+  const wa = await connect(a.token);
+  await waitFor(() => wa.events.find((e) => e.t === 'presence'));
+  srv.store.setHeir(a.user.id);
+  const p = srv.announceLeaving();
+  const ev = await waitFor(() => wa.events.find((e) => e.t === 'host_leaving'));
+  assert.equal(ev.heir, a.user.id);
+  await p;
+  wa.close();
+});
+
+test('CORS libera PATCH e DELETE (o app abre de file://, então todo pedido tem preflight)', async () => {
+  const res = await fetch(srv.localUrl + '/api/messages/abc', { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'PATCH' } });
+  const allowed = res.headers.get('access-control-allow-methods') || '';
+  for (const m of ['GET', 'POST', 'PATCH', 'DELETE']) assert.ok(allowed.includes(m), m);
+});

@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('concordo', {
   screenSources: () => ipcRenderer.invoke('screen:sources'),
   screenPrepare: (sel) => ipcRenderer.invoke('screen:prepare', sel),
   backupStart: (args) => ipcRenderer.invoke('backup:start', args),
+  backupSyncNow: () => ipcRenderer.invoke('backup:sync-now'),
   backupStop: () => ipcRenderer.invoke('backup:stop'),
   backupStatus: (roomId) => ipcRenderer.invoke('backup:status', roomId),
   backupTakeover: (args) => ipcRenderer.invoke('backup:takeover', args),

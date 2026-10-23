@@ -9,6 +9,7 @@
   const $banner = document.getElementById('banner');
   const $toasts = document.getElementById('toasts');
   // ícones do kit (SVG inline, herdam a cor do texto)
+  const sfx = (name) => window.ConcordoSounds && window.ConcordoSounds.play(name);
   const ico = (name, size = 20, cls) => window.ConcordoIcons.icon(name, { size, class: cls });
 
   // ============================================================
@@ -190,6 +191,8 @@
     heir: null,
     backup: null, // { at, error } da cópia local da sala (quando sou o sucessor)
     afterTakeover: false,
+    replyTo: null, // { id, author, text, channel }
+    typing: new Map(), // canal -> Map(userId -> timer)
     voice: { rooms: {}, client: null, channel: null, joining: null, focus: null },
   };
 
@@ -538,15 +541,35 @@
     ui.messages = h('div', { class: 'messages' });
     ui.uploadStatus = h('div', { class: 'upload-status' });
     ui.textarea = h('textarea', { rows: '1', placeholder: 'Escreva uma mensagem…', maxlength: '4000' });
+    ui.replyBar = h('div', { class: 'reply-bar', hidden: true });
+    ui.typing = h('div', { class: 'typing', 'aria-live': 'polite' });
+    ui.mentionPop = h('div', { class: 'mention-pop', hidden: true, role: 'listbox' });
     ui.inviteBtn = h('button', { class: 'btn small with-icon', onclick: openInviteModal }, ico('invite', 16), 'Convidar');
 
     ui.textarea.addEventListener('keydown', (e) => {
+      if (S.mention) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          return moveMention(e.key === 'ArrowDown' ? 1 : -1);
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          return chooseMention(S.mention.index);
+        }
+        if (e.key === 'Escape') return closeMentionPop();
+      }
+      if (e.key === 'Escape' && S.replyTo) return cancelReply();
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
       }
     });
-    ui.textarea.addEventListener('input', autosize);
+    ui.textarea.addEventListener('input', () => {
+      autosize();
+      updateMentionPop();
+      if (ui.textarea.value.trim()) notifyTyping();
+    });
+    ui.textarea.addEventListener('blur', () => setTimeout(closeMentionPop, 120));
     ui.textarea.addEventListener('paste', (e) => {
       const files = [...(e.clipboardData ? e.clipboardData.files : [])];
       if (files.length) {
@@ -578,17 +601,24 @@
     ui.heirNote = h('div', { class: 'heir-note', hidden: true });
     ui.takeover = h('div', { class: 'takeover', hidden: true });
     ui.main = h('div', { class: 'main' },
-      h('div', { class: 'main-head' }, ui.chName, ui.conn),
+      h('div', { class: 'main-head' }, ui.chName,
+        h('div', { class: 'head-tools' },
+          h('button', { class: 'icon-btn', title: 'Mensagens fixadas', 'aria-label': 'Mensagens fixadas', 'data-act': 'pins', onclick: openPins }, ico('pin', 18)),
+          h('button', { class: 'icon-btn', title: 'Buscar mensagens', 'aria-label': 'Buscar mensagens', 'data-act': 'search', onclick: openSearch }, ico('search', 18)),
+          ui.conn)),
       ui.takeover,
       ui.stage,
       ui.messages,
       h('div', { class: 'composer-wrap' },
         ui.uploadStatus,
+        ui.mentionPop,
+        ui.replyBar,
         h('div', { class: 'composer' },
           h('button', { class: 'btn ghost', title: 'Enviar arquivo', onclick: () => fileInput.click(), 'aria-label': 'Enviar arquivo' }, ico('paperclip', 20)),
           fileInput,
           ui.textarea,
-          h('button', { class: 'btn primary with-icon', onclick: sendMessage }, ico('send', 16), 'Enviar'))),
+          h('button', { class: 'btn primary with-icon', onclick: sendMessage }, ico('send', 16), 'Enviar')),
+        ui.typing),
       h('div', { class: 'drop' }, 'Solte os arquivos para enviar'));
 
     const dragHasFiles = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
@@ -970,7 +1000,8 @@
       return;
     }
     S.ui.messages.replaceChildren();
-    if (S.msgs.has(id)) renderMessages();
+    renderTyping();
+    if (S.msgs.has(id) && !S.msgs.get(id).partial) renderMessages();
     else {
       try {
         await loadHistory(id);
@@ -988,6 +1019,7 @@
     const data = await api('GET', `/api/channels/${id}/messages?${q}`);
     entry.list = older ? [...data.messages, ...entry.list] : data.messages;
     entry.hasMore = data.hasMore;
+    if (!older) entry.partial = false;
     S.msgs.set(id, entry);
     if (S.current === id) renderMessages({ keepScroll: older });
   }
@@ -1022,27 +1054,301 @@
     const out = [];
     const sameDay = prev && new Date(prev.ts).toDateString() === new Date(m.ts).toDateString();
     if (!sameDay) out.push(h('div', { class: 'day-sep' }, dayLabel(m.ts)));
-    const grouped = sameDay && prev.userId === m.userId && m.ts - prev.ts < 5 * 60 * 1000;
+    const grouped = !!sameDay && prev.userId === m.userId && m.ts - prev.ts < 5 * 60 * 1000 && !m.replyTo;
+    out.push(msgElement(m, grouped));
+    return out;
+  }
+
+  // texto da mensagem com links e @menções destacadas
+  function richText(text) {
+    if (!text.includes('@')) return linkify(text);
+    const users = [...S.users.values()];
+    const names = users.map((u) => u.name).sort((x, y) => y.length - x.length);
+    const lower = text.toLowerCase();
+    const out = [];
+    let buf = '';
+    for (let i = 0; i < text.length;) {
+      if (text[i] === '@') {
+        const hit = names.find((n) => lower.startsWith('@' + n.toLowerCase(), i) && !/[\p{L}\p{N}_]/u.test(text[i + 1 + n.length] || ' '));
+        if (hit) {
+          if (buf) out.push(...linkify(buf));
+          buf = '';
+          const u = users.find((x) => x.name === hit);
+          out.push(h('span', { class: 'mention' + (u && u.id === S.session.user.id ? ' me' : '') }, text.slice(i, i + 1 + hit.length)));
+          i += 1 + hit.length;
+          continue;
+        }
+      }
+      buf += text[i];
+      i += 1;
+    }
+    if (buf) out.push(...linkify(buf));
+    return out;
+  }
+
+  function msgElement(m, grouped) {
+    const me = S.session.user;
     const user = S.users.get(m.userId);
     const name = user ? user.name : m.author;
-
     const author = h('span', { class: 'author' }, name);
     author.style.color = colorFor(m.userId);
+    const mentioned = !m.deleted && (m.mentions || []).includes(me.id);
+    const body = h('div', { class: 'body' },
+      grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts)),
+        m.pinned ? h('span', { class: 'pin-mark', title: 'Mensagem fixada' }, ico('pin', 13)) : null),
+      m.replyTo && !m.deleted
+        ? h('button', { class: 'reply-ref', title: 'Ir para a mensagem', onclick: () => jumpToMessage(m.channel, m.replyTo.id) },
+          ico('reply', 13), h('b', null, m.replyTo.author), h('span', null, m.replyTo.text || 'anexo'))
+        : null,
+      m.deleted
+        ? h('div', { class: 'text deleted' }, 'Mensagem apagada')
+        : (m.text ? h('div', { class: 'text' }, richText(m.text),
+          m.editedAt ? h('span', { class: 'edited', title: 'Editada às ' + hhmm(m.editedAt) }, ' (editada)') : null) : null),
+      ...(m.deleted ? [] : (m.attachments || []).map(attachmentEl)),
+      m.deleted ? null : reactionsEl(m));
+    const el = h('div', {
+      class: 'msg' + (grouped ? '' : ' head') + (mentioned ? ' mentioned' : '') + (m.pinned ? ' pinned' : '') + (m.deleted ? ' is-deleted' : ''),
+      'data-id': m.id,
+    }, grouped ? h('div', { class: 'gutter' }, hhmm(m.ts)) : avatar(m.userId, name, { big: true }), body, m.deleted ? null : msgTools(m));
+    el.dataset.grouped = grouped ? '1' : '';
+    return el;
+  }
 
-    out.push(
-      h('div', { class: 'msg' + (grouped ? '' : ' head') },
-        grouped ? h('div', { class: 'gutter' }, hhmm(m.ts)) : avatar(m.userId, name, { big: true }),
-        h('div', { class: 'body' },
-          grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts))),
-          m.text ? h('div', { class: 'text' }, linkify(m.text)) : null,
-          (m.attachments || []).map(attachmentEl),
-          reactionsEl(m)),
-        h('button', {
-          class: 'msg-react', title: 'Reagir', 'aria-label': 'Reagir a esta mensagem', 'data-act': 'react-msg',
-          onclick: (e) => openReactionPicker(e.currentTarget, (key) => toggleReaction(m.id, key)),
-        }, ico('smile', 16))),
-    );
-    return out;
+  function msgTools(m) {
+    const me = S.session.user;
+    const mine = m.userId === me.id;
+    const tool = (act, label, icon, onclick, extra = '') =>
+      h('button', { class: 'msg-tool' + extra, title: label, 'aria-label': label, 'data-act': act, onclick }, ico(icon, 16));
+    return h('div', { class: 'msg-tools' },
+      tool('react-msg', 'Reagir', 'smile', (e) => openReactionPicker(e.currentTarget, (key) => toggleReaction(m.id, key)), ' msg-react'),
+      tool('reply-msg', 'Responder', 'reply', () => startReply(m)),
+      mine && m.text ? tool('edit-msg', 'Editar', 'edit', () => startEdit(m)) : null,
+      tool('pin-msg', m.pinned ? 'Desafixar' : 'Fixar', 'pin', () => msgCall('POST', m.id, '/pin')),
+      mine || me.role === 'owner'
+        ? tool('delete-msg', 'Apagar', 'trash', () => {
+          if (confirm('Apagar esta mensagem para todos?')) msgCall('DELETE', m.id, '');
+        }, ' danger')
+        : null);
+  }
+
+  async function msgCall(method, id, suffix, body) {
+    try {
+      await api(method, `/api/messages/${id}${suffix}`, body);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function applyMessageUpdate(m) {
+    const entry = S.msgs.get(m.channel);
+    if (entry) {
+      const i = entry.list.findIndex((x) => x.id === m.id);
+      if (i >= 0) entry.list[i] = m;
+    }
+    const el = document.querySelector(`.msg[data-id="${m.id}"]`);
+    if (el) el.replaceWith(msgElement(m, el.dataset.grouped === '1'));
+    if (S.replyTo && S.replyTo.id === m.id && m.deleted) cancelReply();
+  }
+
+  // ---------- responder ----------
+  function startReply(m) {
+    S.replyTo = { id: m.id, author: m.author, text: (m.text || (m.attachments[0] ? m.attachments[0].name : '')).slice(0, 120), channel: m.channel };
+    renderReplyBar();
+    if (S.ui.textarea) S.ui.textarea.focus();
+  }
+
+  function cancelReply() {
+    S.replyTo = null;
+    renderReplyBar();
+  }
+
+  function renderReplyBar() {
+    const bar = S.ui && S.ui.replyBar;
+    if (!bar) return;
+    const r = S.replyTo;
+    bar.hidden = !r;
+    bar.replaceChildren(...(r ? [
+      ico('reply', 14),
+      h('span', { class: 'reply-text' }, 'Respondendo a ', h('b', null, r.author), ': ' + r.text),
+      h('button', { class: 'btn small ghost', title: 'Cancelar resposta', 'aria-label': 'Cancelar resposta', onclick: cancelReply }, ico('close', 14)),
+    ] : []));
+  }
+
+  // ---------- editar ----------
+  function startEdit(m) {
+    const el = document.querySelector(`.msg[data-id="${m.id}"] .text`);
+    if (!el) return;
+    const box = h('textarea', { class: 'input edit-box', rows: '2', maxlength: '4000', 'aria-label': 'Editar mensagem' });
+    box.value = m.text;
+    const done = (save) => {
+      const text = box.value.trim();
+      if (save && text && text !== m.text) msgCall('PATCH', m.id, '', { text });
+      applyMessageUpdate(S.msgs.get(m.channel)?.list.find((x) => x.id === m.id) || m);
+    };
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        done(true);
+      } else if (e.key === 'Escape') {
+        done(false);
+      }
+    });
+    el.replaceChildren(box, h('div', { class: 'hint' }, 'Enter salva · Esc cancela'));
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+
+  // ---------- ir até uma mensagem (respostas, busca, fixadas) ----------
+  async function jumpToMessage(channel, id) {
+    try {
+      if (S.current !== channel) await selectChannel(channel);
+      let el = document.querySelector(`.msg[data-id="${id}"]`);
+      if (!el) {
+        const data = await api('GET', `/api/channels/${channel}/messages?around=${id}&limit=50`);
+        S.msgs.set(channel, { list: data.messages, hasMore: data.hasMore, partial: true });
+        renderMessages();
+        el = document.querySelector(`.msg[data-id="${id}"]`);
+      }
+      if (!el) return toast('Não encontrei essa mensagem.', 'error');
+      el.scrollIntoView({ block: 'center' });
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 2200);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // ---------- digitando… ----------
+  let lastTypingSent = 0;
+  function notifyTyping() {
+    const now = Date.now();
+    if (now - lastTypingSent < 3000 || !S.current) return;
+    lastTypingSent = now;
+    wsSend({ t: 'typing', channel: S.current });
+  }
+
+  function onTyping(d) {
+    if (!S.typing.has(d.channel)) S.typing.set(d.channel, new Map());
+    const map = S.typing.get(d.channel);
+    clearTimeout(map.get(d.user));
+    map.set(d.user, setTimeout(() => {
+      map.delete(d.user);
+      renderTyping();
+    }, 5000));
+    renderTyping();
+  }
+
+  function renderTyping() {
+    const box = S.ui && S.ui.typing;
+    if (!box) return;
+    const names = [...(S.typing.get(S.current) || new Map()).keys()].map(nameOf);
+    box.textContent = !names.length ? '' : names.length === 1 ? `${names[0]} está digitando…`
+      : names.length === 2 ? `${names[0]} e ${names[1]} estão digitando…` : 'Várias pessoas estão digitando…';
+  }
+
+  // ---------- @menção: sugestões ----------
+  function updateMentionPop() {
+    const ta = S.ui.textarea;
+    const pop = S.ui.mentionPop;
+    const before = ta.value.slice(0, ta.selectionStart);
+    const m = before.match(/(?:^|\s)@([^\s@]{0,24})$/);
+    if (!m) return closeMentionPop();
+    const q = m[1].toLowerCase();
+    const matches = [...S.users.values()].filter((u) => u.id !== S.session.user.id && u.name.toLowerCase().startsWith(q)).slice(0, 6);
+    if (!matches.length) return closeMentionPop();
+    S.mention = { items: matches, index: 0, start: ta.selectionStart - m[1].length - 1 };
+    pop.hidden = false;
+    pop.replaceChildren(...matches.map((u, i) => h('button', {
+      class: 'mention-opt' + (i === 0 ? ' active' : ''), type: 'button',
+      onmousedown: (e) => {
+        e.preventDefault();
+        chooseMention(i);
+      },
+    }, avatar(u.id, u.name, {}), h('span', null, u.name))));
+  }
+
+  function closeMentionPop() {
+    S.mention = null;
+    if (S.ui.mentionPop) S.ui.mentionPop.hidden = true;
+  }
+
+  function chooseMention(i) {
+    const ta = S.ui.textarea;
+    const mn = S.mention;
+    if (!mn) return;
+    const u = mn.items[i];
+    const end = ta.selectionStart;
+    ta.value = ta.value.slice(0, mn.start) + '@' + u.name + ' ' + ta.value.slice(end);
+    const pos = mn.start + u.name.length + 2;
+    ta.setSelectionRange(pos, pos);
+    closeMentionPop();
+    autosize();
+    ta.focus();
+  }
+
+  function moveMention(delta) {
+    const mn = S.mention;
+    mn.index = (mn.index + delta + mn.items.length) % mn.items.length;
+    [...S.ui.mentionPop.children].forEach((c, i) => c.classList.toggle('active', i === mn.index));
+  }
+
+  // ---------- busca e fixadas ----------
+  function openSearch() {
+    const input = h('input', { class: 'input', placeholder: 'Buscar mensagens e arquivos…', maxlength: '100', 'data-role': 'search-input', autocomplete: 'off' });
+    const list = h('div', { class: 'results' }, h('div', { class: 'hint' }, 'Digite para buscar em todos os canais de texto.'));
+    let timer = null;
+    let seq = 0;
+    const run = async () => {
+      const q = input.value.trim();
+      const mine = ++seq;
+      if (q.length < 2) return list.replaceChildren(h('div', { class: 'hint' }, 'Digite ao menos 2 letras.'));
+      try {
+        const r = await api('GET', '/api/search?q=' + encodeURIComponent(q));
+        if (mine !== seq) return;
+        list.replaceChildren(...(r.messages.length
+          ? r.messages.map((m) => resultItem(m, close))
+          : [h('div', { class: 'hint' }, 'Nada encontrado.')]));
+      } catch (e) {
+        list.replaceChildren(h('div', { class: 'hint error' }, e.message));
+      }
+    };
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(run, 250);
+    });
+    const close = modal([
+      h('h3', null, 'Buscar'),
+      input,
+      list,
+      h('div', { class: 'row end', style: { marginTop: '14px' } }, h('button', { class: 'btn ghost', onclick: () => close() }, 'Fechar')),
+    ]);
+    input.focus();
+  }
+
+  function resultItem(m, close) {
+    const text = m.text || (m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
+    return h('button', {
+      class: 'result', onclick: () => {
+        close();
+        jumpToMessage(m.channel, m.id);
+      },
+    }, h('div', { class: 'result-meta' }, h('b', null, m.author), h('span', null, `#${m.channel} · ${dayLabel(m.ts)} ${hhmm(m.ts)}`)),
+    h('div', { class: 'result-text' }, text.slice(0, 160)));
+  }
+
+  async function openPins() {
+    const list = h('div', { class: 'results' }, h('div', { class: 'hint' }, 'Carregando…'));
+    const close = modal([
+      h('h3', null, 'Mensagens fixadas'),
+      list,
+      h('div', { class: 'row end', style: { marginTop: '14px' } }, h('button', { class: 'btn ghost', onclick: () => close() }, 'Fechar')),
+    ]);
+    try {
+      const r = await api('GET', `/api/channels/${S.current}/pins`);
+      list.replaceChildren(...(r.messages.length ? r.messages.map((m) => resultItem(m, close)) : [h('div', { class: 'hint' }, 'Nenhuma mensagem fixada neste canal. Use o alfinete ao passar o mouse sobre uma mensagem.')]));
+    } catch (e) {
+      list.replaceChildren(h('div', { class: 'hint error' }, e.message));
+    }
   }
 
   // ---------- reações ----------
@@ -1178,7 +1484,20 @@
       S.unread.set(m.channel, (S.unread.get(m.channel) || 0) + 1);
       renderChannels();
     }
-    if (!mine && !document.hasFocus()) notify(m);
+    if (S.typing.has(m.channel) && S.typing.get(m.channel).has(m.userId)) {
+      clearTimeout(S.typing.get(m.channel).get(m.userId));
+      S.typing.get(m.channel).delete(m.userId);
+      renderTyping();
+    }
+    if (!mine && !document.hasFocus() && shouldNotify(m)) notify(m);
+  }
+
+  // modo de aviso: 'all' (padrão), 'mentions' (só quando citam você) ou 'none'
+  function shouldNotify(m) {
+    const mode = LS.get('concordo.notify', 'all');
+    if (mode === 'none') return false;
+    if (mode === 'mentions') return (m.mentions || []).includes(S.session.user.id);
+    return true;
   }
 
   function notify(m) {
@@ -1200,7 +1519,10 @@
     if (!text) return;
     if (text.length > S.limits.maxMessageLength) return toast('Mensagem longa demais.', 'error');
     if (!S.ws || S.ws.readyState !== 1) return toast('Sem conexão com a sala. Aguarde a reconexão.', 'error');
-    S.ws.send(JSON.stringify({ t: 'msg', channel: S.current, text }));
+    const reply = S.replyTo && S.replyTo.channel === S.current ? S.replyTo.id : undefined;
+    S.ws.send(JSON.stringify({ t: 'msg', channel: S.current, text, replyTo: reply }));
+    cancelReply();
+    closeMentionPop();
     S.ui.textarea.value = '';
     autosize();
   }
@@ -1266,6 +1588,8 @@
 
     ws.onopen = () => {
       S.retry = 0;
+      if (S.handoff && S.session.url !== S.handoff.url) S.handoff = null; // já estou na sala nova
+      setTimeout(maybeRejoinVoice, 600);
       if (!S.isHost) {
         api('GET', '/api/me').then((me) => {
           if (me && me.rv && S.session && S.session.rv !== me.rv) {
@@ -1292,6 +1616,8 @@
       if (S.ws !== ws) return;
       S.ws = null;
       if (S.voice.client) {
+        S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
+        sfx('disconnected');
         leaveVoice({ silent: true, local: true });
         toast('A conexão caiu e você saiu da chamada de voz.', 'error');
       }
@@ -1318,9 +1644,27 @@
     }
   }
 
+  // Depois de uma queda ou da troca de host, volta sozinho para a chamada onde eu estava.
+  function maybeRejoinVoice(attempt = 0) {
+    const r = S.voiceRejoin;
+    if (!r || !S.session || S.voice.client || S.voice.joining) return;
+    if (Date.now() - r.at > 3 * 60 * 1000) {
+      S.voiceRejoin = null;
+      return;
+    }
+    if (!S.channels.some((c) => c.id === r.channel && c.type === 'voice')) {
+      if (attempt < 8) setTimeout(() => maybeRejoinVoice(attempt + 1), 1000);
+      return;
+    }
+    S.voiceRejoin = null;
+    joinVoice(r.channel);
+    toast('Voltando para a chamada…', 'ok');
+  }
+
   function scheduleReconnect() {
     clearTimeout(S.timer);
-    const delay = Math.min(15000, 1000 * 2 ** Math.min(S.retry, 4));
+    const fast = S.handoff && Date.now() - S.handoff.at < 2 * 60 * 1000; // o host avisou que ia sair: não espera à toa
+    const delay = fast ? 2000 : Math.min(15000, 1000 * 2 ** Math.min(S.retry, 4));
     S.retry += 1;
     S.timer = setTimeout(async () => {
       if (S.leaving || !S.session) return;
@@ -1333,7 +1677,7 @@
           return leave();
         }
         // o endereço temporário muda a cada vez que o host abre o app: procura o novo no ponto de encontro
-        if (!S.isHost && S.retry >= 2) {
+        if (!S.isHost && (S.retry >= 2 || S.handoff)) {
           const found = await followAddress(S.session.rv, S.session.token, S.session.url).catch(() => null);
           if (S.leaving || !S.session) return;
           if (found && found.me) {
@@ -1372,6 +1716,12 @@
         return onIncoming(d.message);
       case 'reaction':
         return onReaction(d);
+      case 'host_leaving':
+        return onHostLeaving(d);
+      case 'msg_update':
+        return applyMessageUpdate(d.message);
+      case 'typing':
+        return onTyping(d);
       case 'live_react':
         return R.isValid(d.key) ? floatReaction(d.from, d.key) : undefined;
       case 'presence':
@@ -1465,13 +1815,33 @@
     });
   }
 
+  // O host avisou que vai sair: o sucessor copia a versão final e assume na hora; os outros esperam o endereço novo.
+  async function onHostLeaving() {
+    if (S.isHost || !S.session) return;
+    S.handoff = { at: Date.now(), url: S.session.url };
+    if (S.voice.client) S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
+    toast('O host está saindo. A sala passa para o sucessor em instantes…', 'ok');
+    if (iAmHeir() && S.session.rv && !S.autoTakeover) {
+      try {
+        await bridge.backupSyncNow();
+      } catch {
+        /* usa a última cópia que existir */
+      }
+      S.autoTakeover = true;
+      takeOverRoom({ auto: true });
+    }
+  }
+
   async function takeOverRoom({ auto = false } = {}) {
     if (!auto && !confirm('Assumir a sala? Seu computador vira o servidor, com as mensagens e arquivos da última cópia, e você vira o dono. ' +
       'Depois, mande o novo código para o pessoal reconectar. Se o host original voltar, ele deve entrar na sua sala pelo código.')) return;
     const me = S.session.user.id;
     const roomId = S.session.room.id;
     try {
-      if (S.voice.client) leaveVoice({ silent: true, local: true });
+      if (S.voice.client) {
+        S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
+        leaveVoice({ silent: true, local: true });
+      }
       const info = await bridge.backupTakeover({ roomId, userId: me });
       closeSocket();
       S.afterTakeover = !auto;
@@ -1517,7 +1887,13 @@
         // o servidor não me tem mais na sala (ex.: entrei por outra janela)
         return leaveVoice({ silent: true, local: true });
       }
-      v.client.syncRoom(ids.filter((id) => id !== me));
+      const others = ids.filter((id) => id !== me);
+      if (v.lastIds) {
+        if (others.some((id) => !v.lastIds.includes(id))) sfx('peerJoin');
+        else if (v.lastIds.some((id) => !others.includes(id))) sfx('peerLeave');
+      }
+      v.lastIds = others;
+      v.client.syncRoom(others);
     }
     scheduleVoiceRender();
   }
@@ -1538,6 +1914,8 @@
     v.joining = null;
     v.channel = d.channel;
     v.focus = null;
+    v.lastIds = null;
+    sfx('join');
     v.client = window.ConcordoVoice.createVoiceClient({
       myId: S.session.user.id,
       send: (to, data) => wsSend({ t: 'rtc', to, data }),
@@ -1558,6 +1936,8 @@
 
   function leaveVoice({ silent = false, local = false } = {}) {
     const v = S.voice;
+    if (v.client && !local) sfx('leave');
+    v.lastIds = null;
     if (v.client) v.client.leave();
     v.client = null;
     v.channel = null;
@@ -1605,13 +1985,31 @@
       !st.hasMic ? h('div', { class: 'vwarn' }, 'Sem microfone — você só ouve.') : null,
       h('div', { class: 'vbtns' },
         btn('mute', ico(st.muted ? 'microphone-off' : 'microphone', 20), st.muted ? 'Ligar microfone' : 'Silenciar microfone', st.muted,
-          () => v.client.setMuted(!st.muted), ' danger-on'),
+          () => {
+            sfx(st.muted ? 'unmute' : 'mute');
+            v.client.setMuted(!st.muted);
+          }, ' danger-on'),
         btn('deafen', ico(st.deafened ? 'headphones-off' : 'headphones', 20), st.deafened ? 'Voltar a ouvir' : 'Ensurdecer (não ouvir ninguém)', st.deafened,
-          () => v.client.setDeafened(!st.deafened), ' danger-on'),
+          () => {
+            sfx(st.deafened ? 'undeafen' : 'deafen');
+            v.client.setDeafened(!st.deafened);
+          }, ' danger-on'),
         btn('cam', ico(st.cam ? 'camera' : 'camera-off', 20), st.cam ? 'Desligar câmera' : 'Ligar câmera', !!st.cam,
-          () => voiceAction(() => v.client.setCamera(!st.cam))),
+          () => voiceAction(async () => {
+            await v.client.setCamera(!st.cam);
+            sfx(st.cam ? 'camOff' : 'camOn');
+          })),
         btn('screen', ico('screen-share', 20), st.screen ? 'Parar de compartilhar a tela' : 'Compartilhar tela', !!st.screen,
-          () => (st.screen ? v.client.stopScreen() : voiceAction(startScreenShare))),
+          () => {
+            if (st.screen) {
+              v.client.stopScreen();
+              sfx('screenOff');
+            } else {
+              voiceAction(async () => {
+                await startScreenShare();
+              });
+            }
+          }),
         btn('react', ico('smile', 20), 'Reagir na chamada', false,
           (e) => openReactionPicker(e.currentTarget, (key) => wsSend({ t: 'live_react', key }), { up: true })),
         btn('leave', ico('call-end', 20), 'Sair da chamada', false, () => leaveVoice(), ' leave')),
@@ -1820,9 +2218,11 @@
     if (!c || !ev.ctrlKey || !ev.shiftKey) return;
     if (ev.code === 'KeyM') {
       ev.preventDefault();
+      sfx(c.state().muted ? 'unmute' : 'mute');
       c.setMuted(!c.state().muted);
     } else if (ev.code === 'KeyD') {
       ev.preventDefault();
+      sfx(c.state().deafened ? 'undeafen' : 'deafen');
       c.setDeafened(!c.state().deafened);
     }
   });
@@ -1916,6 +2316,22 @@
     const cam = select('videoinput', prefs.cam, 'Câmera');
     const out = select('audiooutput', prefs.out, 'Saída');
     const canOut = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+    const notifySel = h('select', { class: 'input', 'data-role': 'notify-mode' },
+      h('option', { value: 'all' }, 'Todas as mensagens'),
+      h('option', { value: 'mentions' }, 'Só quando me citarem (@)'),
+      h('option', { value: 'none' }, 'Nenhuma'));
+    notifySel.value = LS.get('concordo.notify', 'all');
+    notifySel.addEventListener('change', () => LS.set('concordo.notify', notifySel.value));
+    const soundsBox = h('input', { type: 'checkbox', 'data-role': 'sounds-on' });
+    soundsBox.checked = LS.get('concordo.sounds', true) !== false;
+    soundsBox.addEventListener('change', () => {
+      LS.set('concordo.sounds', soundsBox.checked);
+      if (soundsBox.checked) sfx('join');
+    });
+    const soundVol = h('input', { type: 'range', min: '0', max: '1', step: '0.05', 'data-role': 'sounds-vol' });
+    soundVol.value = String(LS.get('concordo.soundVolume', 0.6));
+    soundVol.addEventListener('input', () => LS.set('concordo.soundVolume', Number(soundVol.value)));
+    soundVol.addEventListener('change', () => sfx('unmute'));
     const appCheck = (key, label) => {
       const box = h('input', { type: 'checkbox', 'data-role': 'app-' + key, disabled: true });
       if (bridge.getSettings) {
@@ -1957,6 +2373,9 @@
       h('h4', { class: 'sub' }, 'Aplicativo'),
       appCheck('closeToTray', 'Ao fechar a janela, continuar na bandeja do sistema'),
       appCheck('autoStart', 'Abrir o Concordo junto com o Windows (em segundo plano)'),
+      h('div', { class: 'field' }, h('label', null, 'Avisar de mensagens novas'), notifySel),
+      h('label', { class: 'check' }, soundsBox, h('span', null, 'Sons de chamada (entrar, sair, mutar, câmera, tela)')),
+      h('div', { class: 'field' }, h('label', null, 'Volume dos sons'), soundVol),
       h('h4', { class: 'sub' }, 'Áudio'),
       h('div', { class: 'field' }, h('label', null, 'Microfone'), mic),
       canOut ? h('div', { class: 'field' }, h('label', null, 'Saída de som'), out) : null,
@@ -1984,7 +2403,10 @@
 
   async function startScreenShare() {
     const v = S.voice;
-    if (!bridge.screenSources) return v.client.startScreen({ audio: false });
+    if (!bridge.screenSources) {
+      await v.client.startScreen({ audio: false });
+      return sfx('screenOn');
+    }
     const sources = await bridge.screenSources();
     if (!sources.length) throw new Error('Não encontrei nenhuma tela ou janela para compartilhar.');
     const audio = h('input', { type: 'checkbox', 'data-role': 'screen-audio' });
@@ -1996,6 +2418,7 @@
         LS.set('concordo.screenAudio', audio.checked);
         const withAudio = audio.checked;
         await v.client.startScreen({ audio: withAudio, prepare: () => bridge.screenPrepare({ id: src.id, audio: withAudio }) });
+        sfx('screenOn');
         if (withAudio && v.client && v.client.state().screenNoAudio) {
           toast('O Windows não entregou o som do computador. A tela foi compartilhada sem áudio. Em Configurações → "Copiar diagnóstico da chamada" dá para ver o motivo.', 'error');
         }
@@ -2119,15 +2542,68 @@
   }
 
   async function endRoom() {
-    if (!confirm('Encerrar a sala? O servidor para e todo mundo é desconectado. Os dados ficam guardados no seu computador.')) return;
+    const heir = S.heir && S.users.get(S.heir);
+    const heirOnline = !!(heir && S.online.has(heir.id) && heir.id !== S.session.user.id);
+    let close = null;
+    const stop = async () => {
+      close();
+      S.leaving = true;
+      S.hosted = null;
+      try {
+        await bridge.hostStop();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+      showWelcome();
+    };
+    close = modal([
+      h('h3', null, 'Sair da sala'),
+      heirOnline
+        ? h('p', { class: 'hint' }, `${heir.name} é o sucessor e está online. Ele pode assumir a sala agora: ninguém precisa de código novo e a chamada continua.`)
+        : h('p', { class: 'hint' }, 'Nenhum sucessor está online. Se você encerrar, a sala fica fora do ar até alguém hospedar de novo.'),
+      h('div', { class: 'col', style: { gap: '8px', marginTop: '12px' } },
+        heirOnline ? h('button', { class: 'btn primary', 'data-act': 'handoff', onclick: () => handoffRoom(close) }, `Passar a sala para ${heir.name} e continuar como membro`) : null,
+        h('button', { class: 'btn danger', 'data-act': 'end-room', onclick: stop }, 'Encerrar a sala para todos'),
+        h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancelar')),
+    ]);
+  }
+
+  async function handoffRoom(closeModal) {
+    closeModal();
+    const s0 = S.session;
+    let rv = null;
+    try {
+      rv = (await api('GET', '/api/me')).rv;
+    } catch {
+      /* sem resposta */
+    }
+    if (!rv) return toast('Não consegui preparar a passagem (sem ponto de encontro). Tente de novo em instantes.', 'error');
+    const oldUrl = S.publicUrl || s0.url;
+    const { user, room, token } = s0;
+    if (S.voice.client) S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
+    teardownChat();
     S.leaving = true;
     S.hosted = null;
+    mount(h('div', { class: 'center' }, h('div', { class: 'panel' },
+      h('h2', null, 'Passando a sala…'),
+      h('p', { class: 'hint' }, 'O sucessor está assumindo. Você volta para a sala como membro em instantes.'))));
     try {
-      await bridge.hostStop();
+      await bridge.hostStop(); // avisa todos, espera o sucessor copiar a versão final e encerra
     } catch (e) {
       toast(e.message, 'error');
     }
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const found = await followAddress(rv, token, oldUrl).catch(() => null);
+      if (found && found.me) {
+        toast('A sala agora está com o sucessor. Você continua nela como membro.', 'ok');
+        return enterGuest({ url: found.url, token, user: found.me.user, room: found.me.room, rv: found.me.rv || rv });
+      }
+    }
+    saveRoom({ url: oldUrl, token, user, room, rv });
     showWelcome();
+    toast('O sucessor ainda não assumiu. Sua sala ficou salva: tente entrar de novo daqui a pouco.', 'error');
   }
 
   // ============================================================

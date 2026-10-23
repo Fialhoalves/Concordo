@@ -59,6 +59,9 @@ class Store {
       ],
       files: {},
       reactions: {},
+      edits: {},
+      deleted: {},
+      pins: {},
       rendezvous: null,
     };
     try {
@@ -315,7 +318,7 @@ class Store {
   }
 
   // ---- mensagens ----
-  addMessage({ channel, user, text, attachments }) {
+  addMessage({ channel, user, text, attachments, replyTo, mentions }) {
     const msg = {
       id: rid(8),
       channel,
@@ -325,6 +328,8 @@ class Store {
       attachments: attachments || [],
       ts: Date.now(),
     };
+    if (replyTo) msg.replyTo = replyTo; // { id, author, text }: resumo da mensagem respondida
+    if (mentions && mentions.length) msg.mentions = mentions;
     fs.appendFileSync(this.messagesPath, JSON.stringify(msg) + '\n');
     this.rev += 1;
     if (!this.messages.has(channel)) this.messages.set(channel, []);
@@ -332,17 +337,94 @@ class Store {
     return msg;
   }
 
-  getMessages(channel, { before, limit = 50 } = {}) {
+  // Mensagem como os clientes veem: com reações, edição, exclusão e fixação aplicadas.
+  // (messages.jsonl é só de acréscimo; as alterações ficam no state.json e entram na cópia do sucessor.)
+  decorate(m) {
+    const st = this.state;
+    const out = { ...m };
+    if (st.reactions[m.id]) out.reactions = st.reactions[m.id];
+    if (st.edits[m.id]) {
+      out.text = st.edits[m.id].text;
+      out.editedAt = st.edits[m.id].at;
+    }
+    if (st.deleted[m.id]) {
+      out.deleted = true;
+      out.text = '';
+      out.attachments = [];
+      delete out.reactions;
+    }
+    if (st.pins[m.id]) out.pinned = true;
+    return out;
+  }
+
+  getMessage(id) {
+    const m = this._findMessage(id);
+    return m ? this.decorate(m) : null;
+  }
+
+  editMessage(id, userId, text) {
+    const m = this._findMessage(id);
+    if (!m || this.state.deleted[id]) return null;
+    if (m.userId !== userId) return 'forbidden';
+    this.state.edits[id] = { text, at: Date.now() };
+    this.save();
+    return this.decorate(m);
+  }
+
+  deleteMessage(id, user) {
+    const m = this._findMessage(id);
+    if (!m) return null;
+    if (m.userId !== user.id && user.role !== 'owner') return 'forbidden';
+    this.state.deleted[id] = true;
+    delete this.state.pins[id];
+    this.save();
+    return this.decorate(m);
+  }
+
+  togglePin(id, userId) {
+    const m = this._findMessage(id);
+    if (!m || this.state.deleted[id]) return null;
+    if (this.state.pins[id]) delete this.state.pins[id];
+    else if (Object.keys(this.state.pins).length >= 200) return 'limit';
+    else this.state.pins[id] = { by: userId, at: Date.now() };
+    this.save();
+    return this.decorate(m);
+  }
+
+  pinsOf(channel) {
+    return (this.messages.get(channel) || []).filter((m) => this.state.pins[m.id]).map((m) => this.decorate(m));
+  }
+
+  // busca simples por texto (sem acento e sem diferenciar maiúsculas), das mais novas para as mais antigas
+  search(query, { channel, limit = 40 } = {}) {
+    const norm = (t) => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const q = norm(query).trim();
+    if (!q) return [];
+    const out = [];
+    for (const [ch, list] of this.messages) {
+      if (channel && ch !== channel) continue;
+      for (let i = list.length - 1; i >= 0; i--) {
+        const d = this.decorate(list[i]);
+        if (d.deleted) continue;
+        const hay = norm(d.text) + ' ' + norm((d.attachments || []).map((a) => a.name).join(' '));
+        if (hay.includes(q)) out.push(d);
+      }
+    }
+    return out.sort((a, b) => b.ts - a.ts).slice(0, limit);
+  }
+
+  getMessages(channel, { before, around, limit = 50 } = {}) {
     const list = this.messages.get(channel) || [];
     let end = list.length;
-    if (before) {
+    if (around) {
+      const idx = list.findIndex((m) => m.id === around);
+      if (idx >= 0) end = Math.min(list.length, idx + Math.ceil(limit / 2));
+    } else if (before) {
       const idx = list.findIndex((m) => m.id === before);
       if (idx >= 0) end = idx;
     }
     const start = Math.max(0, end - limit);
-    const reactions = this.state.reactions;
-    const messages = list.slice(start, end).map((m) => (reactions[m.id] ? { ...m, reactions: reactions[m.id] } : m));
-    return { messages, hasMore: start > 0 };
+    return { messages: list.slice(start, end).map((m) => this.decorate(m)), hasMore: start > 0 };
   }
 
   // ---- reações ----

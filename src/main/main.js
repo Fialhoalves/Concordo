@@ -365,6 +365,9 @@ async function openTunnel() {
 async function stopHost() {
   if (!host) return;
   const current = host;
+  // avisa o sucessor (e todos) antes de cair: ele copia a versão final e assume na hora
+  if (current.server.announceLeaving) await current.server.announceLeaving().catch(() => {});
+  if (host !== current) return;
   host = null;
   if (current.tunnel) current.tunnel.stop();
   await current.server.close().catch(() => {});
@@ -443,6 +446,7 @@ function startBackup({ url, token, roomId }) {
       send('backup:status', backupInfo);
     }
   };
+  job.tick = tick;
   job.timer = setInterval(tick, SYNC_EVERY_MS);
   backupJob = job;
   tick();
@@ -451,6 +455,10 @@ function startBackup({ url, token, roomId }) {
 ipcMain.handle('backup:start', (_event, args = {}) => {
   if (host || !roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return false;
   startBackup(args);
+  return true;
+});
+ipcMain.handle('backup:sync-now', async () => {
+  if (backupJob && backupJob.tick) await backupJob.tick();
   return true;
 });
 ipcMain.handle('backup:stop', () => {

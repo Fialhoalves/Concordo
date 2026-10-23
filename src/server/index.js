@@ -137,6 +137,24 @@ async function createConcordoServer(opts = {}) {
     return true;
   }
 
+  // @apelido no texto -> ids de quem foi mencionado (nomes mais longos primeiro, para "@Ana Maria" ganhar de "@Ana")
+  function findMentions(text) {
+    const lower = text.toLowerCase();
+    const ids = new Set();
+    for (const u of store.users().sort((a, b) => b.name.length - a.name.length)) {
+      const needle = '@' + u.name.toLowerCase();
+      let from = 0;
+      for (;;) {
+        const i = lower.indexOf(needle, from);
+        if (i < 0) break;
+        const after = lower[i + needle.length];
+        if (!after || !/[\p{L}\p{N}_]/u.test(after)) ids.add(u.id);
+        from = i + needle.length;
+      }
+    }
+    return [...ids];
+  }
+
   function makeCode(inviteToken) {
     const base = getPublicUrl();
     if (!base) throw httpError(409, 'o túnel ainda não está pronto');
@@ -248,7 +266,7 @@ async function createConcordoServer(opts = {}) {
     const url = new URL(req.url, 'http://localhost');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       return res.end();
@@ -279,6 +297,7 @@ async function createConcordoServer(opts = {}) {
       }
       const user = store.createUser(name);
       broadcast({ t: 'user', user: pub(user) });
+      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null }); // o sucessor padrão é o primeiro a entrar
       return sendJson(res, 201, { token: user.token, user: pub(user), room: store.room });
     }
 
@@ -310,7 +329,20 @@ async function createConcordoServer(opts = {}) {
       if (!store.hasChannel(m[1], 'text')) throw httpError(404, 'canal não encontrado');
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit'), 10) || 50));
       const before = url.searchParams.get('before') || undefined;
-      return sendJson(res, 200, store.getMessages(m[1], { before, limit }));
+      const around = url.searchParams.get('around') || undefined;
+      return sendJson(res, 200, store.getMessages(m[1], { before, around, limit }));
+    }
+
+    m = p.match(/^\/api\/channels\/([a-z0-9_-]+)\/pins$/);
+    if (method === 'GET' && m) {
+      if (!store.hasChannel(m[1], 'text')) throw httpError(404, 'canal não encontrado');
+      return sendJson(res, 200, { messages: store.pinsOf(m[1]) });
+    }
+
+    if (method === 'GET' && p === '/api/search') {
+      const q = (url.searchParams.get('q') || '').slice(0, 100);
+      const channel = url.searchParams.get('channel') || undefined;
+      return sendJson(res, 200, { messages: store.search(q, { channel }) });
     }
 
     m = p.match(/^\/api\/channels\/([a-z0-9_-]+)\/upload$/);
@@ -364,6 +396,34 @@ async function createConcordoServer(opts = {}) {
       return sendJson(res, 200, { ok: true });
     }
 
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)$/);
+    if (m && method === 'PATCH') {
+      const body = await readJson(req);
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text || text.length > MAX_MESSAGE_LENGTH) throw httpError(400, 'mensagem inválida');
+      const r = store.editMessage(m[1], user.id, text);
+      if (!r) throw httpError(404, 'mensagem não encontrada');
+      if (r === 'forbidden') throw httpError(403, 'só quem enviou pode editar');
+      broadcast({ t: 'msg_update', message: r });
+      return sendJson(res, 200, { message: r });
+    }
+    if (m && method === 'DELETE') {
+      const r = store.deleteMessage(m[1], user);
+      if (!r) throw httpError(404, 'mensagem não encontrada');
+      if (r === 'forbidden') throw httpError(403, 'só quem enviou ou o dono pode apagar');
+      broadcast({ t: 'msg_update', message: r });
+      return sendJson(res, 200, { message: r });
+    }
+
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)\/pin$/);
+    if (method === 'POST' && m) {
+      const r = store.togglePin(m[1], user.id);
+      if (!r) throw httpError(404, 'mensagem não encontrada');
+      if (r === 'limit') throw httpError(400, 'limite de mensagens fixadas atingido');
+      broadcast({ t: 'msg_update', message: r });
+      return sendJson(res, 200, { message: r });
+    }
+
     m = p.match(/^\/api\/messages\/([a-f0-9]+)\/reactions$/);
     if (method === 'POST' && m) {
       const body = await readJson(req);
@@ -390,6 +450,7 @@ async function createConcordoServer(opts = {}) {
       for (const ws of clients.get(target.id) || []) ws.close(4001, 'removido');
       clients.delete(target.id);
       broadcast({ t: 'user_removed', id: target.id });
+      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null });
       broadcastVoice();
       broadcast({ t: 'presence', online: online() });
       return sendJson(res, 200, { ok: true });
@@ -495,6 +556,13 @@ async function createConcordoServer(opts = {}) {
         return;
       }
 
+      if (data.t === 'typing') {
+        if (!store.hasChannel(data.channel, 'text') || !store.getUser(user.id)) return;
+        const out = JSON.stringify({ t: 'typing', channel: data.channel, user: user.id });
+        for (const [id, set] of clients) if (id !== user.id) for (const w of set) if (w.readyState === OPEN) w.send(out);
+        return;
+      }
+
       if (data.t === 'live_react') {
         const me = voice.get(user.id);
         if (!me || me.ws !== ws || !Reactions.isValid(data.key)) return;
@@ -515,7 +583,14 @@ async function createConcordoServer(opts = {}) {
         if (!allowMessage(user.id)) {
           return ws.send(JSON.stringify({ t: 'error', message: 'devagar! muitas mensagens seguidas' }));
         }
-        const message = store.addMessage({ channel: data.channel, user, text });
+        let replyTo;
+        if (typeof data.replyTo === 'string') {
+          const orig = store.getMessage(data.replyTo);
+          if (orig && !orig.deleted && orig.channel === data.channel) {
+            replyTo = { id: orig.id, author: orig.author, text: (orig.text || (orig.attachments[0] ? orig.attachments[0].name : '')).slice(0, 120) };
+          }
+        }
+        const message = store.addMessage({ channel: data.channel, user, text, replyTo, mentions: findMentions(text) });
         broadcast({ t: 'msg', message });
       }
     });
@@ -554,6 +629,15 @@ async function createConcordoServer(opts = {}) {
   });
   const actualPort = server.address().port;
 
+  // O dono vai sair: avisa todos e dá alguns segundos para o sucessor copiar a versão final.
+  async function announceLeaving() {
+    const heir = store.getHeir();
+    const heirOnline = !!(heir && clients.has(heir.id));
+    broadcast({ t: 'host_leaving', heir: heir ? heir.id : null });
+    if (heirOnline) await new Promise((r) => setTimeout(r, 3000));
+    return heirOnline;
+  }
+
   async function close() {
     clearInterval(heartbeat);
     for (const set of clients.values()) for (const ws of set) ws.terminate();
@@ -572,6 +656,7 @@ async function createConcordoServer(opts = {}) {
     store,
     owner,
     makeCode,
+    announceLeaving,
     close,
   };
 }
