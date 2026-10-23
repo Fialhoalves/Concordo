@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('concordo', {
   backupStop: () => ipcRenderer.invoke('backup:stop'),
   backupStatus: (roomId) => ipcRenderer.invoke('backup:status', roomId),
   backupTakeover: (args) => ipcRenderer.invoke('backup:takeover', args),
+  rendezvousResolve: (rv) => ipcRenderer.invoke('rendezvous:resolve', rv),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   on(channel, callback) {
     if (!EVENTS.has(channel)) return () => {};

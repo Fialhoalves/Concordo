@@ -23,10 +23,11 @@
   }
 
   // invite é opcional: um código sem convite só serve para quem já é membro.
-  function encode({ url, roomId, roomName, invite }) {
+  function encode({ url, roomId, roomName, invite, rv }) {
     const data = { v: 1, u: url, r: roomId };
     if (roomName) data.n = roomName;
     if (invite) data.i = invite;
+    if (rv) data.p = rv; // ponto de encontro: permite achar o novo endereço da sala sozinho
     return PREFIX + toB64Url(JSON.stringify(data));
   }
 
@@ -46,6 +47,7 @@
         roomId: d.r,
         roomName: typeof d.n === 'string' ? d.n : '',
         invite: typeof d.i === 'string' ? d.i : '',
+        rv: typeof d.p === 'string' ? d.p : '',
       };
     } catch {
       return null;

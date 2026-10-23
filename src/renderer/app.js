@@ -238,9 +238,23 @@
       url: session.url,
       token: session.token,
       name: session.user.name,
+      rv: session.rv || (rooms[session.room.id] && rooms[session.room.id].rv) || '',
       savedAt: Date.now(),
     };
     LS.set('concordo.rooms', rooms);
+  }
+
+  // Procura o endereço novo da sala no ponto de encontro. Só vale se a sala responder e reconhecer o seu token.
+  async function followAddress(rv, token, currentUrl) {
+    if (!rv || !bridge.rendezvousResolve) return null;
+    const url = await bridge.rendezvousResolve(rv);
+    if (!url || url === currentUrl) return null;
+    try {
+      const me = await request(url, token, 'GET', '/api/me');
+      return { url, me };
+    } catch (e) {
+      return e && e.status === 401 ? { url, unauthorized: true } : null;
+    }
   }
 
   function forgetRoom(roomId) {
@@ -312,14 +326,20 @@
     button.disabled = true;
     try {
       const me = await request(room.url, room.token, 'GET', '/api/me');
-      enterGuest({ url: room.url, token: room.token, user: me.user, room: me.room });
+      enterGuest({ url: room.url, token: room.token, user: me.user, room: me.room, rv: me.rv || room.rv });
     } catch (e) {
       if (e.status === 401) {
         forgetRoom(room.roomId);
         toast('Você não faz mais parte dessa sala.', 'error');
         showWelcome();
       } else {
-        toast('A sala está offline ou mudou de endereço. Peça ao host um novo código de sessão e cole em "Entrar".', 'error');
+        const found = await followAddress(room.rv, room.token, room.url);
+        if (found && found.me) {
+          return enterGuest({ url: found.url, token: room.token, user: found.me.user, room: found.me.room, rv: found.me.rv || room.rv });
+        }
+        toast(room.rv
+          ? 'A sala está offline agora. Se o host fechou o app, o sucessor assume sozinho em instantes; tente de novo em um minuto.'
+          : 'A sala está offline ou mudou de endereço. Peça ao host um novo código de sessão e cole em "Entrar".', 'error');
         button.disabled = false;
       }
     }
@@ -465,7 +485,7 @@
     if (saved) {
       try {
         const me = await request(d.url, saved.token, 'GET', '/api/me');
-        return enterGuest({ url: d.url, token: saved.token, user: me.user, room: me.room });
+        return enterGuest({ url: d.url, token: saved.token, user: me.user, room: me.room, rv: me.rv || d.rv || saved.rv });
       } catch (e) {
         if (e.status !== 401) throw e;
         forgetRoom(d.roomId); // o host removeu você; tenta de novo como novo membro
@@ -479,7 +499,7 @@
     if (!name) throw new Error('Escolha um apelido.');
     LS.set('concordo.nick', name);
     const res = await request(d.url, null, 'POST', '/api/join', { invite: d.invite, name });
-    enterGuest({ url: d.url, token: res.token, user: res.user, room: res.room });
+    enterGuest({ url: d.url, token: res.token, user: res.user, room: res.room, rv: d.rv });
   }
 
   function enterGuest(session) {
@@ -633,7 +653,9 @@
     const map = {
       online: ['ok', 'Conectado'],
       connecting: ['warn', 'Conectando…'],
-      reconnecting: ['warn', S.retry >= 5 ? 'Sem resposta. O host pode ter reiniciado; peça um novo código de sessão.' : 'Reconectando…'],
+      reconnecting: ['warn', S.retry >= 5
+        ? (S.session && S.session.rv ? 'Sem resposta do host. Procurando o novo endereço da sala…' : 'Sem resposta. O host pode ter reiniciado; peça um novo código de sessão.')
+        : 'Reconectando…'],
     };
     const [cls, text] = map[state] || map.connecting;
     ui.conn.replaceChildren(h('span', { class: 'dot ' + cls }), text);
@@ -645,6 +667,7 @@
   async function showChat() {
     S.leaving = false;
     S.hasConnected = false;
+    S.autoTakeover = false;
     S.retry = 0;
     S.msgs = new Map();
     S.unread = new Map();
@@ -836,9 +859,105 @@
         h('div', { class: 'body' },
           grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts))),
           m.text ? h('div', { class: 'text' }, linkify(m.text)) : null,
-          (m.attachments || []).map(attachmentEl))),
+          (m.attachments || []).map(attachmentEl),
+          reactionsEl(m)),
+        h('button', {
+          class: 'msg-react', title: 'Reagir', 'aria-label': 'Reagir a esta mensagem', 'data-act': 'react-msg',
+          onclick: (e) => openReactionPicker(e.currentTarget, (key) => toggleReaction(m.id, key)),
+        }, ico('smile', 16))),
     );
     return out;
+  }
+
+  // ---------- reações ----------
+  const R = window.ConcordoReactions;
+
+  function reactionFace(key, size) {
+    if (key.startsWith('s:')) return h('img', { class: 'rx-img', src: `assets/mascot/${key.slice(2)}.png`, alt: key.slice(2), width: size, height: size, draggable: 'false' });
+    return h('span', { class: 'rx-emoji', style: { fontSize: size * 0.8 + 'px' } }, key.slice(2));
+  }
+
+  function reactionsEl(m) {
+    const me = S.session.user.id;
+    const entries = Object.entries(m.reactions || {}).filter(([, ids]) => ids.length);
+    const box = h('div', { class: 'reactions', 'data-msg': m.id, hidden: !entries.length });
+    for (const [key, ids] of entries) {
+      const mine = ids.includes(me);
+      const who = ids.map((id) => nameOf(id)).join(', ');
+      box.append(h('button', {
+        class: 'rx' + (mine ? ' mine' : ''), title: who, 'aria-pressed': mine ? 'true' : 'false',
+        onclick: () => toggleReaction(m.id, key),
+      }, reactionFace(key, 20), h('span', { class: 'rx-count' }, String(ids.length))));
+    }
+    return box;
+  }
+
+  async function toggleReaction(id, key) {
+    try {
+      await api('POST', `/api/messages/${id}/reactions`, { key });
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function onReaction(d) {
+    const entry = S.msgs.get(d.channel);
+    const m = entry && entry.list.find((x) => x.id === d.id);
+    if (!m) return;
+    m.reactions = d.reactions;
+    const old = document.querySelector(`.reactions[data-msg="${d.id}"]`);
+    if (old) old.replaceWith(reactionsEl(m));
+  }
+
+  // seletor flutuante: figurinhas do mascote + alguns emojis
+  function openReactionPicker(anchor, onPick, { up = false } = {}) {
+    document.querySelectorAll('.rx-picker').forEach((n) => n.remove());
+    const close = () => {
+      pop.remove();
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', esc, true);
+    };
+    const choose = (key) => () => {
+      close();
+      onPick(key);
+    };
+    const pop = h('div', { class: 'rx-picker', role: 'dialog', 'aria-label': 'Escolher reação' },
+      h('div', { class: 'rx-row stickers' },
+        ...R.STICKERS.map((s) => h('button', { class: 'rx-opt', title: s.label, 'aria-label': s.label, onclick: choose('s:' + s.id) }, reactionFace('s:' + s.id, 44)))),
+      h('div', { class: 'rx-row emojis' },
+        ...R.EMOJI.map((e) => h('button', { class: 'rx-opt small', 'aria-label': e, onclick: choose('e:' + e) }, reactionFace('e:' + e, 30)))));
+    const outside = (ev) => {
+      if (!pop.contains(ev.target) && !anchor.contains(ev.target)) close();
+    };
+    const esc = (ev) => {
+      if (ev.key === 'Escape') close();
+    };
+    document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth;
+    const hgt = pop.offsetHeight;
+    const left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+    const top = up || r.bottom + hgt + 8 > window.innerHeight ? Math.max(8, r.top - hgt - 8) : r.bottom + 6;
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    setTimeout(() => {
+      document.addEventListener('mousedown', outside, true);
+      document.addEventListener('keydown', esc, true);
+    });
+  }
+
+  // reação ao vivo na chamada: sobe pela tela de todo mundo que está no canal de voz
+  function floatReaction(from, key) {
+    let layer = document.querySelector('.float-layer');
+    if (!layer) {
+      layer = h('div', { class: 'float-layer', 'aria-hidden': 'true' });
+      document.body.append(layer);
+    }
+    if (layer.childElementCount > 24) return;
+    const item = h('div', { class: 'float-rx' }, reactionFace(key, 72), h('span', { class: 'float-name' }, nameOf(from)));
+    item.style.left = 8 + Math.random() * 78 + '%';
+    item.addEventListener('animationend', () => item.remove());
+    layer.append(item);
   }
 
   function attachmentEl(a) {
@@ -1029,8 +1148,25 @@
           forgetRoom(S.session.room.id);
           return leave();
         }
+        // o endereço temporário muda a cada vez que o host abre o app: procura o novo no ponto de encontro
+        if (!S.isHost && S.retry >= 2) {
+          const found = await followAddress(S.session.rv, S.session.token, S.session.url).catch(() => null);
+          if (S.leaving || !S.session) return;
+          if (found && found.me) {
+            S.session.url = found.url;
+            if (found.me.rv) S.session.rv = found.me.rv;
+            saveRoom(S.session);
+            toast('Sala encontrada no novo endereço. Reconectando…', 'ok');
+            return openSocket();
+          }
+        }
         setConn('reconnecting');
         renderTakeoverBar();
+        // o host sumiu de vez: o sucessor assume sozinho (os outros o seguem pelo mesmo ponto de encontro)
+        if (iAmHeir() && S.retry >= 8 && S.session.rv && !S.autoTakeover) {
+          S.autoTakeover = true;
+          return takeOverRoom({ auto: true });
+        }
         return scheduleReconnect();
       }
       openSocket();
@@ -1050,6 +1186,10 @@
     switch (d.t) {
       case 'msg':
         return onIncoming(d.message);
+      case 'reaction':
+        return onReaction(d);
+      case 'live_react':
+        return R.isValid(d.key) ? floatReaction(d.from, d.key) : undefined;
       case 'presence':
         S.online = new Set(d.online);
         return renderMembers();
@@ -1137,12 +1277,12 @@
         h('span', null, info
           ? `O host parece ter saído. Você tem uma cópia da sala (${ago(info.at)}).`
           : 'O host parece ter saído, mas você ainda não tem uma cópia desta sala.'),
-        info ? h('button', { class: 'btn small primary', 'data-act': 'takeover', onclick: takeOverRoom }, 'Assumir a sala') : null].filter(Boolean));
+        info ? h('button', { class: 'btn small primary', 'data-act': 'takeover', onclick: () => takeOverRoom() }, 'Assumir a sala') : null].filter(Boolean));
     });
   }
 
-  async function takeOverRoom() {
-    if (!confirm('Assumir a sala? Seu computador vira o servidor, com as mensagens e arquivos da última cópia, e você vira o dono. ' +
+  async function takeOverRoom({ auto = false } = {}) {
+    if (!auto && !confirm('Assumir a sala? Seu computador vira o servidor, com as mensagens e arquivos da última cópia, e você vira o dono. ' +
       'Depois, mande o novo código para o pessoal reconectar. Se o host original voltar, ele deve entrar na sua sala pelo código.')) return;
     const me = S.session.user.id;
     const roomId = S.session.room.id;
@@ -1150,10 +1290,13 @@
       if (S.voice.client) leaveVoice({ silent: true, local: true });
       const info = await bridge.backupTakeover({ roomId, userId: me });
       closeSocket();
-      S.afterTakeover = true;
+      S.afterTakeover = !auto;
       enterHost(info);
+      if (auto) toast('O host saiu e você assumiu a sala. Os amigos reconectam sozinhos em instantes.', 'ok');
     } catch (e) {
+      S.autoTakeover = false;
       toast(e.message, 'error');
+      if (auto && S.session && !S.isHost) scheduleReconnect();
     }
   }
 
@@ -1285,6 +1428,8 @@
           () => voiceAction(() => v.client.setCamera(!st.cam))),
         btn('screen', ico('screen-share', 20), st.screen ? 'Parar de compartilhar a tela' : 'Compartilhar tela', !!st.screen,
           () => (st.screen ? v.client.stopScreen() : voiceAction(startScreenShare))),
+        btn('react', ico('smile', 20), 'Reagir na chamada', false,
+          (e) => openReactionPicker(e.currentTarget, (key) => wsSend({ t: 'live_react', key }), { up: true })),
         btn('leave', ico('call-end', 20), 'Sair da chamada', false, () => leaveVoice(), ' leave')),
     ].filter(Boolean));
   }
@@ -1645,14 +1790,16 @@
     const sources = await bridge.screenSources();
     if (!sources.length) throw new Error('Não encontrei nenhuma tela ou janela para compartilhar.');
     const audio = h('input', { type: 'checkbox', 'data-role': 'screen-audio' });
+    audio.checked = LS.get('concordo.screenAudio', true) !== false; // ligado por padrão
     let close = null;
     const pick = (src) => async () => {
       close();
       await voiceAction(async () => {
-        await bridge.screenPrepare({ id: src.id, audio: audio.checked });
-        await v.client.startScreen({ audio: audio.checked });
-        if (audio.checked && v.client && v.client.state().screenNoAudio) {
-          toast('O Windows não entregou o som do computador. A tela foi compartilhada sem áudio.', 'error');
+        LS.set('concordo.screenAudio', audio.checked);
+        const withAudio = audio.checked;
+        await v.client.startScreen({ audio: withAudio, prepare: () => bridge.screenPrepare({ id: src.id, audio: withAudio }) });
+        if (withAudio && v.client && v.client.state().screenNoAudio) {
+          toast('O Windows não entregou o som do computador. A tela foi compartilhada sem áudio. Em Configurações → "Copiar diagnóstico da chamada" dá para ver o motivo.', 'error');
         }
       });
     };
@@ -1665,7 +1812,7 @@
             h('img', { src: src.thumbnail, alt: '' }),
             h('span', null, src.name)))),
       h('label', { class: 'check' }, audio, h('span', null, 'Compartilhar também o som do computador')),
-      h('div', { class: 'hint' }, 'O som do computador inclui a voz dos seus amigos, que podem ouvir eco. Use fones de ouvido.'),
+      h('div', { class: 'hint' }, 'No Windows o som é do computador inteiro (não dá para separar por janela). O Concordo tenta não reenviar a voz dos seus amigos; use fones de ouvido para evitar eco.'),
       h('div', { class: 'row end', style: { marginTop: '14px' } },
         h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancelar')),
     ]);

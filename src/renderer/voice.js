@@ -726,24 +726,35 @@
       changed();
     }
 
-    async function startScreen({ audio = false } = {}) {
+    // prepare(): reativa a captura no processo principal antes de cada tentativa (ele só vale para um pedido).
+    async function startScreen({ audio = false, prepare = null } = {}) {
       if (!local.channel || local.screen) return;
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          video: videoConstraints('screen'),
-          // pede ao Chromium que não capture o som do próprio Concordo (voz dos amigos); ignorado se não houver suporte
-          audio: audio ? { suppressLocalAudioPlayback: true, restrictOwnAudio: true } : false,
-        });
-      } catch (e) {
-        throw friendlyError(e, 'a captura de tela');
+      // 1ª tentativa tenta excluir o som do próprio Concordo (voz dos amigos); se o Chromium não entregar áudio assim,
+      // a 2ª pede o som do sistema inteiro, que é melhor do que ficar sem.
+      const attempts = audio ? [{ suppressLocalAudioPlayback: true, restrictOwnAudio: true }, true] : [false];
+      let stream = null;
+      let lastError = null;
+      for (let i = 0; i < attempts.length; i++) {
+        if (prepare) await prepare();
+        let got;
+        try {
+          got = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints('screen'), audio: attempts[i] });
+        } catch (e) {
+          lastError = e;
+          note('captura de tela falhou (tentativa ' + (i + 1) + '): ' + (e && e.name));
+          if (e && e.name === 'NotAllowedError') break; // o usuário cancelou ou o sistema negou: não adianta repetir
+          continue;
+        }
+        const hasAudio = got.getAudioTracks().length > 0;
+        note('captura de tela tentativa ' + (i + 1) + ': áudio ' + (hasAudio ? 'sim' : 'não'));
+        if (stream) stream.getTracks().forEach((t) => t.stop());
+        stream = got;
+        if (hasAudio || !audio) break;
       }
-      if (audio && !stream.getAudioTracks().length) {
-        note('tela sem faixa de áudio');
-        local.screenNoAudio = true;
-      } else {
-        local.screenNoAudio = false;
-      }
+      if (!stream) throw friendlyError(lastError, 'a captura de tela');
+      local.screenNoAudio = !!audio && !stream.getAudioTracks().length;
+      const at = stream.getAudioTracks()[0];
+      if (at) note('áudio da tela: ' + (at.label || 'sem rótulo') + ' ' + JSON.stringify(at.getSettings ? at.getSettings() : {}));
       if (!local.channel || local.screen) {
         stream.getTracks().forEach((t) => t.stop());
         return;

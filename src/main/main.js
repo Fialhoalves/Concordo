@@ -5,6 +5,7 @@ const path = require('node:path');
 const { createConcordoServer } = require('../server');
 const tunnel = require('./tunnel');
 const backup = require('./backup');
+const rendezvous = require('./rendezvous');
 
 const PROTOCOL = 'concordo';
 
@@ -205,6 +206,30 @@ function setTunnelState(state, message = '') {
   send('host:status', { state, message, publicUrl: host.publicUrl });
 }
 
+// Publica o endereço atual da sala no ponto de encontro (em segundo plano; falhar não atrapalha nada).
+async function publishAddress(current) {
+  const store = current.server.store;
+  const attempt = async () => {
+    let rv = store.getRendezvous();
+    if (!rv) {
+      rv = await rendezvous.create();
+      store.setRendezvous(rv);
+    }
+    if (host !== current || !current.publicUrl) return;
+    await rendezvous.publish(rv, current.publicUrl);
+  };
+  for (const wait of [0, 8000, 30000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    if (host !== current || !current.publicUrl) return;
+    try {
+      await attempt();
+      return;
+    } catch (e) {
+      console.warn('[concordo] ponto de encontro:', e.message);
+    }
+  }
+}
+
 async function openTunnel() {
   if (!host) return;
   const dataDirs = {
@@ -240,6 +265,7 @@ async function openTunnel() {
     current.tunnel = t;
     current.publicUrl = t.url;
     setTunnelState('ready', '');
+    publishAddress(current);
   } catch (e) {
     if (host) {
       host.publicUrl = null;
@@ -357,6 +383,15 @@ ipcMain.handle('backup:takeover', async (_event, args = {}) => {
   stopBackup();
   await startHost({ dataDir: dir, takeoverUserId: args.userId });
   return hostSnapshot();
+});
+
+ipcMain.handle('rendezvous:resolve', async (_event, rv) => {
+  try {
+    const r = await rendezvous.resolve(rv);
+    return r ? r.url : null;
+  } catch {
+    return null;
+  }
 });
 
 ipcMain.handle('host:info', () => hostSnapshot());

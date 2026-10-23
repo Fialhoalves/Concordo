@@ -82,7 +82,7 @@ after(async () => {
 test('convite: codifica e decodifica, inclusive com acentos e texto em volta', () => {
   const code = Invite.encode({ url: PUBLIC, roomId: 'abc', roomName: 'Galera do açaí', invite: 'tok' });
   const d = Invite.decode(`olha o convite: ${code} bora!`);
-  assert.deepEqual(d, { url: PUBLIC, roomId: 'abc', roomName: 'Galera do açaí', invite: 'tok' });
+  assert.deepEqual(d, { url: PUBLIC, roomId: 'abc', roomName: 'Galera do açaí', invite: 'tok', rv: '' });
   assert.equal(Invite.decode(code.replace(Invite.PREFIX, '')).roomId, 'abc');
   assert.equal(Invite.decode('lixo qualquer'), null);
   const evil = Invite.encode({ url: 'javascript:alert(1)', roomId: 'x' });
@@ -329,4 +329,62 @@ test('JSON inválido e rota inexistente têm respostas limpas', async () => {
   const pre = await fetch(srv.localUrl + '/api/state', { method: 'OPTIONS' });
   assert.equal(pre.status, 204);
   assert.equal(pre.headers.get('access-control-allow-origin'), '*');
+});
+
+test('reações em mensagens: alterna, aparece no histórico e persiste no estado', async () => {
+  const a = await joinAs('Reage1');
+  const b = await joinAs('Reage2');
+  const wsB = await connect(b.token);
+  const wsA = await connect(a.token);
+  wsA.send(JSON.stringify({ t: 'msg', channel: 'geral', text: 'reaja aqui' }));
+  const m = (await waitFor(() => wsB.events.find((e) => e.t === 'msg' && e.message.text === 'reaja aqui'))).message;
+
+  let r = await call(b.token, 'POST', `/api/messages/${m.id}/reactions`, { key: 's:feliz' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.reactions['s:feliz'], [b.user.id]);
+  const ev = await waitFor(() => wsA.events.find((e) => e.t === 'reaction' && e.id === m.id));
+  assert.equal(ev.channel, 'geral');
+
+  await call(a.token, 'POST', `/api/messages/${m.id}/reactions`, { key: 's:feliz' });
+  const hist = await call(a.token, 'GET', '/api/channels/geral/messages');
+  const got = hist.json.messages.find((x) => x.id === m.id);
+  assert.equal(got.reactions['s:feliz'].length, 2);
+
+  // tirar a reação de novo
+  r = await call(b.token, 'POST', `/api/messages/${m.id}/reactions`, { key: 's:feliz' });
+  assert.deepEqual(r.json.reactions['s:feliz'], [a.user.id]);
+
+  assert.equal((await call(a.token, 'POST', `/api/messages/${m.id}/reactions`, { key: 'x:invalida' })).status, 400);
+  assert.equal((await call(a.token, 'POST', '/api/messages/ffffffff/reactions', { key: 'e:🔥' })).status, 404);
+  wsA.close();
+  wsB.close();
+});
+
+test('reação ao vivo na chamada: só chega a quem está no mesmo canal de voz', async () => {
+  const a = await joinAs('Live1');
+  const b = await joinAs('Live2');
+  const c = await joinAs('Live3');
+  const [wa, wb, wc] = [await connect(a.token), await connect(b.token), await connect(c.token)];
+  wa.send(JSON.stringify({ t: 'voice_join', channel: 'voz' }));
+  wb.send(JSON.stringify({ t: 'voice_join', channel: 'voz' }));
+  await waitFor(() => wb.events.find((e) => e.t === 'voice_joined'));
+  wa.send(JSON.stringify({ t: 'live_react', key: 's:oculos' }));
+  const got = await waitFor(() => wb.events.find((e) => e.t === 'live_react'));
+  assert.equal(got.from, a.user.id);
+  assert.equal(got.key, 's:oculos');
+  wc.send(JSON.stringify({ t: 'live_react', key: 's:oculos' })); // fora da chamada: ignorado
+  wa.send(JSON.stringify({ t: 'live_react', key: 'qualquer' })); // inválida: ignorada
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(wb.events.filter((e) => e.t === 'live_react').length, 1);
+  assert.equal(wc.events.filter((e) => e.t === 'live_react').length, 0);
+  [wa, wb, wc].forEach((w) => w.close());
+});
+
+test('/api/me entrega o ponto de encontro só a membros e os códigos o levam junto', async () => {
+  srv.store.setRendezvous({ id: 'abcdef123', key: 'k'.repeat(24) });
+  const me = await call(srv.owner.token, 'GET', '/api/me');
+  assert.equal(me.json.rv, 'abcdef123.' + 'k'.repeat(24));
+  assert.equal((await call(null, 'GET', '/api/me')).status, 401);
+  const code = (await call(srv.owner.token, 'GET', '/api/session-code')).json.code;
+  assert.equal(Invite.decode(code).rv, me.json.rv);
 });

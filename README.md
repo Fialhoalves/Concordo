@@ -162,3 +162,10 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 - Ícones em `src/renderer/assets/icons/*.svg` (24×24, contorno 1.8, `currentColor`). Depois de editar/trocar um SVG rode `npm run icons` para regenerar `src/renderer/icons.js`.
 - Símbolo e ícone do app em `src/renderer/assets/brand/`; `build/icon.ico` é usado no instalador.
 - Fonte: Inter se instalada, com fallback Segoe UI.
+
+## v0.7.0
+
+- **Endereço automático:** a cada abertura o túnel temporário muda de endereço. O host publica o endereço atual num bloco público gratuito (jsonblob.com), assinado com uma chave que só os membros têm (vem no código de convite e no `/api/me`). Os amigos procuram o novo endereço sozinhos ao reconectar; só é preciso um código novo **uma vez**, para quem entrou antes desta versão. Se o ponto de encontro estiver fora do ar, o código de sessão manual continua funcionando.
+- **Migração automática:** se o host some por ~1 minuto, o sucessor assume a sala sozinho e os amigos o seguem pelo mesmo ponto de encontro.
+- **Reações:** figurinhas do mascote (`src/renderer/assets/mascot`) e emojis em mensagens e ao vivo na chamada (botão de carinha na barra de chamada).
+- **Áudio da tela:** ligado por padrão; tenta excluir a voz dos amigos e, se o Windows não entregar áudio assim, pede o som do sistema inteiro.

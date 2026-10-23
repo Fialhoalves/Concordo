@@ -58,6 +58,8 @@ class Store {
         { id: 'voz', name: 'voz', type: 'voice' },
       ],
       files: {},
+      reactions: {},
+      rendezvous: null,
     };
     try {
       const raw = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
@@ -338,7 +340,48 @@ class Store {
       if (idx >= 0) end = idx;
     }
     const start = Math.max(0, end - limit);
-    return { messages: list.slice(start, end), hasMore: start > 0 };
+    const reactions = this.state.reactions;
+    const messages = list.slice(start, end).map((m) => (reactions[m.id] ? { ...m, reactions: reactions[m.id] } : m));
+    return { messages, hasMore: start > 0 };
+  }
+
+  // ---- reações ----
+  // { chave: [ids de quem reagiu] }; fica no state.json, então entra na cópia do sucessor
+  _findMessage(id) {
+    for (const list of this.messages.values()) {
+      const m = list.find((x) => x.id === id);
+      if (m) return m;
+    }
+    return null;
+  }
+
+  reactionsOf(messageId) {
+    return this.state.reactions[messageId] || {};
+  }
+
+  toggleReaction(messageId, userId, key) {
+    const m = this._findMessage(messageId);
+    if (!m) return null;
+    const all = this.state.reactions;
+    const mine = (all[messageId] = all[messageId] || {});
+    const list = (mine[key] = mine[key] || []);
+    const i = list.indexOf(userId);
+    if (i >= 0) list.splice(i, 1);
+    else if (Object.keys(mine).length < 20 || list.length) list.push(userId);
+    if (!list.length) delete mine[key];
+    if (!Object.keys(mine).length) delete all[messageId];
+    this.save();
+    return { channel: m.channel, reactions: this.reactionsOf(messageId) };
+  }
+
+  // ---- ponto de encontro (endereço atual da sala) ----
+  getRendezvous() {
+    return this.state.rendezvous || null;
+  }
+
+  setRendezvous(value) {
+    this.state.rendezvous = value;
+    this.save();
   }
 
   // ---- arquivos ----

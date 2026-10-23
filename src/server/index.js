@@ -9,6 +9,8 @@ const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
 const { Store } = require('./store');
 const Invite = require('../shared/invite');
+const Reactions = require('../shared/reactions');
+const Rendezvous = require('../main/rendezvous');
 
 const OPEN = 1;
 const MAX_MESSAGE_LENGTH = 4000;
@@ -143,6 +145,7 @@ async function createConcordoServer(opts = {}) {
       roomId: store.room.id,
       roomName: store.room.name,
       invite: inviteToken,
+      rv: store.getRendezvous() ? Rendezvous.format(store.getRendezvous()) : undefined,
     });
   }
 
@@ -284,7 +287,8 @@ async function createConcordoServer(opts = {}) {
     if (!user) throw httpError(401, 'não autorizado');
 
     if (method === 'GET' && p === '/api/me') {
-      return sendJson(res, 200, { user: pub(user), room: store.room });
+      const rv = store.getRendezvous();
+      return sendJson(res, 200, { user: pub(user), room: store.room, rv: rv ? Rendezvous.format(rv) : null });
     }
 
     if (method === 'GET' && p === '/api/state') {
@@ -358,6 +362,16 @@ async function createConcordoServer(opts = {}) {
       if (!store.setHeir(String(body.userId || ''))) throw httpError(400, 'usuário inválido para sucessor');
       broadcast({ t: 'heir', id: store.getHeir().id });
       return sendJson(res, 200, { ok: true });
+    }
+
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)\/reactions$/);
+    if (method === 'POST' && m) {
+      const body = await readJson(req);
+      if (!Reactions.isValid(body.key)) throw httpError(400, 'reação inválida');
+      const r = store.toggleReaction(m[1], user.id, body.key);
+      if (!r) throw httpError(404, 'mensagem não encontrada');
+      broadcast({ t: 'reaction', id: m[1], channel: r.channel, reactions: r.reactions });
+      return sendJson(res, 200, { ok: true, reactions: r.reactions });
     }
 
     if (method === 'GET' && p === '/api/session-code') {
@@ -478,6 +492,17 @@ async function createConcordoServer(opts = {}) {
         if (target.ws.readyState === OPEN) {
           target.ws.send(JSON.stringify({ t: 'rtc', from: user.id, data: data.data }));
         }
+        return;
+      }
+
+      if (data.t === 'live_react') {
+        const me = voice.get(user.id);
+        if (!me || me.ws !== ws || !Reactions.isValid(data.key)) return;
+        const now = Date.now();
+        if (now - (me.lastReact || 0) < 300) return;
+        me.lastReact = now;
+        const out = JSON.stringify({ t: 'live_react', from: user.id, key: data.key });
+        for (const v of voice.values()) if (v.channel === me.channel && v.ws.readyState === OPEN) v.ws.send(out);
         return;
       }
 
