@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 100" role="img" aria-label="Concordo">
+<defs>
+  <linearGradient id="violet" x1="2" y1="3" x2="15" y2="15" gradientUnits="userSpaceOnUse"><stop stop-color="#9A81FF"/><stop offset="1" stop-color="#6D4AFF"/></linearGradient>
+  <linearGradient id="teal" x1="8" y1="9" x2="22" y2="21" gradientUnits="userSpaceOnUse"><stop stop-color="#00CFA4"/><stop offset="1" stop-color="#00D084"/></linearGradient>
+</defs>
+<g transform="translate(7 8) scale(2.85)"><g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.4">
+  <path d="M13.9 6.1 11.7 4.7a5.05 5.05 0 0 0-7 1.45l-.7 1.06a5.05 5.05 0 0 0 1.45 7l2.25 1.47a5.05 5.05 0 0 0 7-1.45l.65-.98" stroke="url(#violet)"/>
+  <path d="m10.1 17.9 2.2 1.44a5.05 5.05 0 0 0 7-1.45l.7-1.06a5.05 5.05 0 0 0-1.45-7l-2.25-1.47a5.05 5.05 0 0 0-7 1.45l-.65.98" stroke="url(#teal)"/>
+</g></g>
+<text x="94" y="53" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="43" font-weight="650" letter-spacing="-1.7" fill="#F8FAFC">Concordo</text>
+<text x="94" y="77" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="10" font-weight="500" letter-spacing="2.0" fill="#B8C2D6">CONVERSE · COMPARTILHE · JUNTOS</text></svg>
