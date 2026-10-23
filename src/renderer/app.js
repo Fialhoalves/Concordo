@@ -180,6 +180,7 @@
     limits: { maxUploadBytes: 0, maxMessageLength: 4000 },
     current: null,
     msgs: new Map(), // canal -> { list, hasMore }
+    hostedList: [], // salas que eu hospedo: { roomId, name, running, info }
     unread: new Map(),
     away: 0, // mensagens recebidas com a janela sem foco (canal aberto)
     ws: null,
@@ -282,12 +283,35 @@
 
   function showWelcome() {
     teardownChat();
-    const rooms = Object.values(getRooms()).sort((a, b) => b.savedAt - a.savedAt);
+    const hostedRooms = S.hostedList;
+    const hostedSig = JSON.stringify(hostedRooms.map((r) => [r.roomId, r.name, r.running]));
+    const rooms = Object.values(getRooms()).filter((r) => !hostedRooms.some((x) => x.roomId === r.roomId)).sort((a, b) => b.savedAt - a.savedAt);
+
+    // salas que eu hospedo: abertas neste computador ou fechadas (os dados continuam aqui)
+    const hostedRows = hostedRooms.map((r) => {
+      const open = h('button', { class: 'btn small primary', 'data-act': 'open-hosted' }, r.running ? 'Voltar' : 'Abrir');
+      open.addEventListener('click', async () => {
+        open.disabled = true;
+        try {
+          enterHost(r.running && r.info ? r.info : await bridge.hostOpen(r.roomId));
+        } catch (e) {
+          toast(e.message, 'error');
+          open.disabled = false;
+        }
+      });
+      return h('div', { class: 'saved-item', 'data-hosted': r.roomId },
+        h('div', null,
+          h('div', { class: 'name' }, r.name || 'Sala'),
+          h('div', { class: 'hint' }, 'você hospeda'),
+          h('div', { class: 'room-status', 'data-state': r.running ? 'online' : 'offline' }, r.running ? 'aberta neste computador' : 'fechada: abre quando você quiser')),
+        h('div', { class: 'row' }, open));
+    });
 
     const rows = new Map(); // roomId -> { status, enter, reopen, note }
-    const savedList = rooms.length
+    const savedList = rooms.length || hostedRows.length
       ? h('div', { class: 'saved' },
           h('h4', null, 'Suas salas'),
+          hostedRows,
           rooms.map((r) => {
             const enter = h('button', { class: 'btn small primary' }, 'Entrar');
             enter.addEventListener('click', () => reconnect(r, enter));
@@ -423,7 +447,7 @@
   function showHostSetup() {
     const nick = h('input', { class: 'input', maxlength: '24', placeholder: 'Como os amigos vão te ver', value: LS.get('concordo.nick', '') });
     const room = h('input', { class: 'input', maxlength: '40', value: LS.get('concordo.roomName', 'Concordo') });
-    const msg = h('div', { class: 'hint' }, 'Seu computador vira o servidor. Deixe o Concordo aberto enquanto a galera estiver conversando.');
+    const msg = h('div', { class: 'hint' }, 'Cria uma sala nova (você pode hospedar várias ao mesmo tempo). Deixe o Concordo aberto enquanto a galera estiver conversando.');
     const go = h('button', { class: 'btn primary' }, 'Iniciar sala');
 
     // endereço fixo (opcional): túnel nomeado da Cloudflare
@@ -590,6 +614,8 @@
     S.hosted = { roomId: info.room.id, name: info.room.name, localUrl: info.localUrl, token: info.token, userId: info.user.id };
     S.tunnel = { state: info.tunnelState, message: info.tunnelMessage };
     S.publicUrl = info.publicUrl;
+    if (!S.hostedList.some((r) => r.roomId === info.room.id)) S.hostedList.push({ roomId: info.room.id, name: info.room.name, running: true, info });
+    refreshHosted().then(() => { renderRail(); syncBackground(); });
     showChat();
   }
 
@@ -726,9 +752,19 @@
   S.bg = new Map(); // roomId -> { ws, timer, retry }
   S.bgUnread = new Map(); // roomId -> quantidade
 
+  async function refreshHosted() {
+    if (!bridge.hostList) return S.hostedList;
+    try {
+      S.hostedList = (await bridge.hostList()) || [];
+    } catch {
+      /* mantém a lista anterior */
+    }
+    return S.hostedList;
+  }
+
   function knownRooms() {
     const list = [];
-    if (S.hosted) list.push({ roomId: S.hosted.roomId, name: S.hosted.name, hosted: true });
+    for (const r of S.hostedList) list.push({ roomId: r.roomId, name: r.name, hosted: true, running: r.running });
     for (const r of Object.values(getRooms()).sort((a, b) => b.savedAt - a.savedAt)) {
       if (!list.some((x) => x.roomId === r.roomId)) list.push({ ...r, name: r.roomName || r.name, hosted: false });
     }
@@ -767,12 +803,8 @@
     try {
       let enter;
       if (target.hosted) {
-        const info = bridge.hostInfo ? await bridge.hostInfo() : null;
-        if (!info) {
-          S.hosted = null;
-          renderRail();
-          throw new Error('A sala que você hospeda não está mais ativa.');
-        }
+        let info = bridge.hostInfo ? await bridge.hostInfo(target.roomId) : null;
+        if (!info) info = await bridge.hostOpen(target.roomId); // estava fechada: abre de novo
         enter = () => enterHost(info);
       } else {
         let url = target.url;
@@ -806,8 +838,10 @@
     const current = S.session ? S.session.room.id : null;
     const wanted = new Map();
     for (const r of Object.values(getRooms())) if (r.roomId !== current) wanted.set(r.roomId, { url: r.url, token: r.token, rv: r.rv, name: r.roomName, userId: r.userId });
-    if (S.hosted && S.hosted.localUrl && S.hosted.roomId !== current) {
-      wanted.set(S.hosted.roomId, { url: S.hosted.localUrl, token: S.hosted.token, name: S.hosted.name, userId: S.hosted.userId, local: true });
+    for (const r of S.hostedList) {
+      if (r.running && r.info && r.roomId !== current) {
+        wanted.set(r.roomId, { url: r.info.localUrl, token: r.info.token, name: r.name, userId: r.info.user.id, local: true });
+      }
     }
     for (const [id, c] of S.bg) {
       if (!wanted.has(id)) {
@@ -917,7 +951,7 @@
         onclick: async (e) => {
           e.target.disabled = true;
           try {
-            await bridge.hostRetryTunnel();
+            await bridge.hostRetryTunnel(S.session.room.id);
           } catch (err) {
             toast(err.message, 'error');
           }
@@ -2819,12 +2853,14 @@
     const stop = async () => {
       close();
       S.leaving = true;
+      const rid = S.session.room.id;
       S.hosted = null;
       try {
-        await bridge.hostStop();
+        await bridge.hostStop(rid);
       } catch (e) {
         toast(e.message, 'error');
       }
+      await refreshHosted();
       showWelcome();
     };
     close = modal([
@@ -2855,12 +2891,14 @@
     teardownChat();
     S.leaving = true;
     S.hosted = null;
+    const hostedId = room.id;
     mount(h('div', { class: 'center' }, h('div', { class: 'panel' },
       mascot('acenando', 96),
       h('h2', null, 'Passando a sala…'),
       h('p', { class: 'hint' }, 'O sucessor está assumindo. Você volta para a sala como membro em instantes.'))));
     try {
-      await bridge.hostStop(); // avisa todos, espera o sucessor copiar a versão final e encerra
+      await bridge.hostStop(hostedId); // avisa todos, espera o sucessor copiar a versão final e encerra
+      await refreshHosted();
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -2919,6 +2957,7 @@
       return;
     }
     bridge.on('host:status', (ev) => {
+      if (!S.session || !S.isHost || (ev.roomId && ev.roomId !== S.session.room.id)) return; // outra sala que eu hospedo
       S.tunnel = { state: ev.state, message: ev.message };
       S.publicUrl = ev.publicUrl;
       renderTunnel();
@@ -2940,7 +2979,9 @@
     // Outro computador já hospeda esta sala com uma geração mais nova: este deixa de ser host e entra como membro.
     bridge.on('host:superseded', async (ev) => {
       const s0 = S.session;
-      if (!S.isHost || !s0 || !ev || !ev.url) return;
+      if (!ev || !ev.url) return;
+      refreshHosted();
+      if (!S.isHost || !s0 || (ev.roomId && ev.roomId !== s0.room.id)) return;
       const { token } = s0;
       S.hosted = null;
       teardownChat();
@@ -2959,8 +3000,9 @@
       renderHeirNote();
     });
 
-    const running = await bridge.hostInfo();
-    if (running) return enterHost(running);
+    const hosted = await refreshHosted();
+    const running = hosted.find((r) => r.running && r.info);
+    if (running) return enterHost(running.info);
     const link = await bridge.takeDeepLink();
     showWelcome();
     if (link) showJoin(link);

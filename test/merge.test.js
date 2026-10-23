@@ -244,3 +244,15 @@ test('ponteiro com geração: assinatura cobre geração e dono; formato antigo 
     server.close();
   }
 });
+
+test('sala nova usa o id pedido (uma pasta por sala hospedada)', async () => {
+  const srv = await createConcordoServer({ dataDir: tmp('rid'), roomId: 'abcdef012345', roomName: 'Nova', ownerName: 'Ana', getPublicUrl: () => 'http://x' });
+  try {
+    assert.equal(srv.store.room.id, 'abcdef012345');
+    const ping = await (await fetch(srv.localUrl + '/api/ping')).json();
+    assert.equal(ping.roomId, 'abcdef012345');
+    assert.equal(ping.epoch, 1);
+  } finally {
+    await srv.close();
+  }
+});

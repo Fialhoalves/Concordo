@@ -205,3 +205,9 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Sem popups do Windows por padrão**: mensagem nova toca um som curto, põe um contador vermelho no ícone da barra de tarefas e faz o ícone piscar. O contador zera quando você volta ao app.
 - Em Configurações → "Avisar de mensagens novas" dá para escolher popup só quando citarem você, popup em tudo, ou nenhum aviso.
 - Fechar pelo X não mostra mais o aviso "continua aberto": o ícone na bandeja já indica.
+
+## v0.12.0
+
+- **Várias salas hospedadas ao mesmo tempo**: "Hospedar" agora sempre cria uma sala NOVA (antes só reabria e renomeava a que já estava ativa). Cada sala tem sua pasta (`host-data/<id>`) e seu próprio túnel; as outras continuam funcionando enquanto você usa uma. O endereço fixo (túnel nomeado) vale para a primeira sala.
+- **Suas salas** na tela inicial lista também as que você hospeda: "aberta neste computador" (Voltar) ou "fechada" (Abrir). A barra lateral mostra todas, e abrir uma fechada é um clique.
+- A sala única das versões anteriores é movida sozinha para a nova estrutura na primeira abertura.

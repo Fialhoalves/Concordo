@@ -29,8 +29,9 @@ function slugChannel(raw) {
 const hashToken = (t) => crypto.createHash('sha256').update(String(t || '')).digest('hex');
 
 class Store {
-  constructor(dir) {
+  constructor(dir, { roomId } = {}) {
     this.dir = dir;
+    this._newRoomId = roomId;
     this.uploadsDir = path.join(dir, 'uploads');
     fs.mkdirSync(this.uploadsDir, { recursive: true });
     this.statePath = path.join(dir, 'state.json');
@@ -61,7 +62,7 @@ class Store {
     const defaults = {
       // epoch: sobe a cada troca de host (o maior vence); lineage: identifica a "linha do tempo" do arquivo de
       // mensagens (muda a cada troca de host, então cópias antigas baixam tudo de novo em vez de emendar bytes)
-      room: { id: rid(6), name: 'Concordo', epoch: 1, lineage: rid(6) },
+      room: { id: this._newRoomId || rid(6), name: 'Concordo', epoch: 1, lineage: rid(6) },
       removed: {},
       users: {},
       invites: {},

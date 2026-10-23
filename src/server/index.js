@@ -98,7 +98,7 @@ async function createConcordoServer(opts = {}) {
   } = opts;
   if (!dataDir) throw new Error('dataDir é obrigatório');
 
-  const store = new Store(dataDir);
+  const store = new Store(dataDir, { roomId: opts.roomId });
   if (roomName) store.setRoomName(cleanName(roomName, 40));
   if (takeoverUserId && !store.transferOwner(takeoverUserId)) throw new Error('usuário da cópia não encontrado');
   if (takeoverUserId && takeoverToken) store.adoptToken(takeoverUserId, takeoverToken);
