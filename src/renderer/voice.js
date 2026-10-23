@@ -28,7 +28,8 @@
 
   const sdpOf = (d) => ({ type: d.type, sdp: d.sdp });
 
-  function createVoiceClient({ myId, send, getIce, getState, onChange, onLocalState }) {
+  function createVoiceClient({ myId, send, getIce, getState, onChange, onLocalState, getPrefs }) {
+    const prefsNow = () => (getPrefs && getPrefs()) || {};
     const local = {
       channel: null,
       mic: null,
@@ -71,6 +72,7 @@
         const AC = root.AudioContext || root.webkitAudioContext;
         if (!AC) return null;
         audioCtx = new AC();
+        applySink();
       }
       if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
       return audioCtx;
@@ -139,37 +141,99 @@
       return { cam, screen, mic };
     }
 
+    // ---------- volume e saída de som ----------
+    const userPrefs = {}; // id -> { mic, screen, muted }  (volume 0..2, 1 = normal)
+
+    function gainFor(id, kind) {
+      const p = userPrefs[id] || {};
+      if (local.deafened || p.muted) return 0;
+      return p[kind] == null ? 1 : p[kind];
+    }
+
+    function applyGains() {
+      for (const peer of peers.values()) {
+        for (const node of peer.audio.values()) {
+          const g = gainFor(peer.id, node.kind);
+          if (node.gain) node.gain.gain.value = g;
+          else node.el.volume = Math.min(1, g);
+        }
+      }
+    }
+
+    function applySink() {
+      const id = prefsNow().out || 'default';
+      if (audioCtx && typeof audioCtx.setSinkId === 'function') audioCtx.setSinkId(id === 'default' ? '' : id).catch(() => {});
+    }
+
     function syncAudio(peer) {
       const { screen, mic } = classify(peer);
       const want = new Map();
-      if (mic) want.set('mic:' + mic.id, mic);
+      if (mic) want.set('mic:' + mic.id, { kind: 'mic', stream: mic });
       if (screen) {
         for (const t of screen.getAudioTracks()) {
           const key = 'screen:' + t.id;
-          want.set(key, (peer.audio.get(key) && peer.audio.get(key).srcObject) || new MediaStream([t]));
+          const old = peer.audio.get(key);
+          want.set(key, { kind: 'screen', stream: old ? old.stream : new MediaStream([t]) });
         }
       }
-      for (const [key, el] of peer.audio) {
+      for (const [key, node] of peer.audio) {
         if (!want.has(key)) {
-          el.srcObject = null;
-          el.remove();
+          disposeNode(node);
           peer.audio.delete(key);
         }
       }
-      for (const [key, stream] of want) {
-        let el = peer.audio.get(key);
-        if (!el) {
-          el = document.createElement('audio');
-          el.autoplay = true;
-          el.srcObject = stream;
-          host().append(el);
-          peer.audio.set(key, el);
-          el.play().catch(() => {});
+      for (const [key, w] of want) {
+        if (peer.audio.has(key)) continue;
+        const el = document.createElement('audio');
+        el.autoplay = true;
+        el.srcObject = w.stream;
+        host().append(el);
+        const node = { kind: w.kind, stream: w.stream, el, src: null, gain: null, probe: null };
+        const ctx = ensureContext();
+        if (ctx) {
+          // o <audio> fica mudo só para manter o fluxo vivo; o som sai pelo WebAudio (permite volume acima de 100%)
+          el.muted = true;
+          node.src = ctx.createMediaStreamSource(w.stream);
+          node.gain = ctx.createGain();
+          node.src.connect(node.gain);
+          node.gain.connect(ctx.destination);
+          node.probe = ctx.createAnalyser();
+          node.probe.fftSize = 512;
+          node.src.connect(node.probe);
         }
-        el.muted = local.deafened;
+        el.play().catch(() => {});
+        peer.audio.set(key, node);
       }
+      applyGains();
       if (mic) startMeter(peer.id, mic);
       else stopMeter(peer.id);
+    }
+
+    function disposeNode(node) {
+      try {
+        if (node.src) node.src.disconnect();
+        if (node.gain) node.gain.disconnect();
+      } catch {
+        /* já desconectado */
+      }
+      node.el.srcObject = null;
+      node.el.remove();
+    }
+
+    function setUserVolume(id, kind, value) {
+      const p = (userPrefs[id] = userPrefs[id] || {});
+      p[kind] = Math.max(0, Math.min(2, Number(value)));
+      applyGains();
+    }
+
+    function setUserMuted(id, muted) {
+      const p = (userPrefs[id] = userPrefs[id] || {});
+      p.muted = !!muted;
+      applyGains();
+    }
+
+    function setOutputDevice() {
+      applySink();
     }
 
     function addTracksToPeer(peer, kind, stream) {
@@ -273,10 +337,7 @@
       } catch {
         /* já fechado */
       }
-      for (const el of peer.audio.values()) {
-        el.srcObject = null;
-        el.remove();
-      }
+      for (const node of peer.audio.values()) disposeNode(node);
       stopMeter(id);
     }
 
@@ -301,6 +362,89 @@
       }
     }
 
+    // ---------- dispositivos ----------
+    async function openMic() {
+      const p = prefsNow();
+      const base = {
+        echoCancellation: p.echo !== false,
+        noiseSuppression: p.noise !== false,
+        autoGainControl: p.agc !== false,
+      };
+      if (p.mic) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: p.mic } } });
+        } catch (e) {
+          if (e && e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError') throw e;
+          /* dispositivo sumiu: usa o padrão */
+        }
+      }
+      return navigator.mediaDevices.getUserMedia({ audio: base });
+    }
+
+    async function openCam() {
+      const p = prefsNow();
+      const base = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+      if (p.cam) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ video: { ...base, deviceId: { exact: p.cam } } });
+        } catch (e) {
+          if (e && e.name !== 'OverconstrainedError' && e.name !== 'NotFoundError') throw e;
+        }
+      }
+      return navigator.mediaDevices.getUserMedia({ video: base });
+    }
+
+    // Troca o microfone no meio da chamada, sem renegociar.
+    async function restartMic() {
+      if (!local.channel) return;
+      let next;
+      try {
+        next = await openMic();
+      } catch (e) {
+        throw friendlyError(e, 'o microfone');
+      }
+      const track = next.getAudioTracks()[0];
+      track.enabled = !local.muted;
+      const had = !!local.mic;
+      if (local.mic) local.mic.getTracks().forEach((t) => t.stop());
+      stopMeter(myId);
+      local.mic = next;
+      local.micError = null;
+      startMeter(myId, next);
+      if (!had) {
+        for (const peer of peers.values()) addTracksToPeer(peer, 'mic', next);
+      } else {
+        for (const peer of peers.values()) {
+          for (const sn of peer.senders) if (sn.kind === 'mic') await sn.sender.replaceTrack(track).catch(() => {});
+        }
+      }
+      changed();
+    }
+
+    async function restartCamera() {
+      if (!local.channel || !local.cam) return;
+      let next;
+      try {
+        next = await openCam();
+      } catch (e) {
+        throw friendlyError(e, 'a câmera');
+      }
+      const track = next.getVideoTracks()[0];
+      local.cam.getTracks().forEach((t) => {
+        t.onended = null;
+        t.stop();
+      });
+      track.onended = () => setCamera(false);
+      for (const peer of peers.values()) {
+        for (const sn of peer.senders) if (sn.kind === 'cam') await sn.sender.replaceTrack(track).catch(() => {});
+      }
+      // mantém o mesmo id de stream (já anunciado aos outros) trocando só a faixa
+      const old = local.cam;
+      for (const t of old.getTracks()) old.removeTrack(t);
+      old.addTrack(track);
+      changed();
+    }
+
     // ---------- API ----------
     async function join(channel, peerIds) {
       if (local.channel) leave();
@@ -312,9 +456,7 @@
 
       let mic = null;
       try {
-        mic = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
+        mic = await openMic();
       } catch (e) {
         local.micError = friendlyError(e, 'o microfone').message;
       }
@@ -412,9 +554,7 @@
       if (on && !local.cam) {
         let stream;
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-          });
+          stream = await openCam();
         } catch (e) {
           throw friendlyError(e, 'a câmera');
         }
@@ -466,6 +606,29 @@
       myId,
       join,
       leave,
+      setUserVolume,
+      setUserMuted,
+      setOutputDevice,
+      restartMic,
+      restartCamera,
+      // usado nos testes: ganho e sinal de cada fonte de áudio recebida
+      debugAudio() {
+        const out = [];
+        for (const peer of peers.values()) {
+          for (const [key, node] of peer.audio) {
+            let rms = null;
+            if (node.probe) {
+              const buf = new Uint8Array(node.probe.fftSize);
+              node.probe.getByteTimeDomainData(buf);
+              let sum = 0;
+              for (const b of buf) sum += ((b - 128) / 128) ** 2;
+              rms = Math.sqrt(sum / buf.length);
+            }
+            out.push({ id: peer.id, key, kind: node.kind, gain: node.gain ? node.gain.gain.value : null, rms });
+          }
+        }
+        return out;
+      },
       handleSignal,
       syncRoom,
       setMuted,

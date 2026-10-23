@@ -289,3 +289,12 @@ textarea.input { resize: vertical; min-height: 84px; }
 .fixed-box { margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
 .fixed-box summary { cursor: pointer; font-weight: 600; }
 .fixed-box .steps { padding-left: 18px; margin: 6px 0; }
+
+.ctx-menu { position: fixed; z-index: 1000; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; width: 250px; box-shadow: 0 8px 30px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 10px; }
+.ctx-title { font-weight: 700; }
+.ctx-row input[type=range] { width: 100%; }
+.ctx-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.ctx-check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.ctx-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px; cursor: pointer; }
+.ctx-btn:hover { border-color: var(--accent); }
+.me-bar .who .btn { margin-left: 4px; }

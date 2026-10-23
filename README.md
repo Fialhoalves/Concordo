@@ -28,7 +28,12 @@ lista de membros com presença, notificações, atualização automática pelo G
 1. O dono cria um canal em **+ → Voz e vídeo** (já vem um canal `voz`). Clique no canal e em **Entrar na chamada**.
 2. Na barra que aparece embaixo da lista de canais: 🎙️ silenciar, 🎧 ensurdecer, 📷 câmera, 🖥️ compartilhar tela, 📞 sair.
 3. Clique num vídeo para destacá-lo; o botão ⛶ coloca em tela cheia.
-4. Ao compartilhar a tela, escolha a tela ou janela. O som do computador é opcional e desligado por padrão: ele inclui a
+4. **Botão direito** no nome de alguém (na lista, na chamada ou no vídeo) abre o menu com volume da voz (0 a 200%),
+   volume da transmissão de tela e *Silenciar para mim*. Os ajustes ficam salvos por pessoa neste computador.
+5. O botão ⚙ ao lado do seu nome escolhe microfone, saída de som e câmera (a troca vale na hora, mesmo na chamada) e liga ou
+   desliga cancelamento de eco, supressão de ruído e ajuste automático de volume.
+6. Atalhos com a chamada aberta: **Ctrl+Shift+M** silencia o microfone e **Ctrl+Shift+D** ensurdece (valem com o app em foco).
+7. Ao compartilhar a tela, escolha a tela ou janela. O som do computador é opcional e desligado por padrão: ele inclui a
    voz dos amigos, que ouviriam eco. Use fones se ligar.
 
 Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo no computador do host.

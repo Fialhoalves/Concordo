@@ -525,7 +525,8 @@
 
     const me = S.session.user;
     const meBar = h('div', { class: 'me-bar' },
-      h('div', { class: 'who' }, avatar(me.id, me.name), h('span', null, me.name)),
+      h('div', { class: 'who' }, avatar(me.id, me.name), h('span', null, me.name),
+        h('button', { class: 'btn ghost small', title: 'Áudio e vídeo', 'data-act': 'settings', onclick: openVoiceSettings }, '⚙')),
       S.isHost
         ? h('div', { class: 'row' },
             ui.inviteBtn,
@@ -698,7 +699,7 @@
     });
     S.ui.memberList.replaceChildren(
       ...users.map((u) =>
-        h('div', { class: 'member' + (S.online.has(u.id) ? '' : ' offline') },
+        h('div', { class: 'member' + (S.online.has(u.id) ? '' : ' offline'), 'data-user': u.id },
           avatar(u.id, u.name, { presence: true }),
           h('span', { class: 'name' }, u.name),
           u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, '👑') : null,
@@ -1105,8 +1106,10 @@
       getState: (id) => voiceMembers(v.channel).find((p) => p.id === id),
       onChange: scheduleVoiceRender,
       onLocalState: (st) => wsSend({ t: 'voice_state', ...st }),
+      getPrefs: vprefs,
     });
     const client = v.client;
+    applySavedUserPrefs(client);
     await client.join(d.channel, d.peers || []);
     if (v.client !== client) return;
     const st = client.state();
@@ -1274,6 +1277,169 @@
     stage.className = 'stage live' + (v.focus ? ' has-focus' : '') + ' n' + Math.min(nodes.length, 9);
     const same = nodes.length === stage.children.length && nodes.every((n, i) => stage.children[i] === n);
     if (!same) stage.replaceChildren(...nodes);
+  }
+
+  // ---------- preferências de áudio/vídeo e menu de contexto ----------
+  const VPREFS_KEY = 'concordo.voice';
+  const vprefs = () => {
+    const p = LS.get(VPREFS_KEY, {});
+    p.users = p.users || {};
+    return p;
+  };
+  const saveVprefs = (p) => LS.set(VPREFS_KEY, p);
+
+  function applySavedUserPrefs(client) {
+    const users = vprefs().users;
+    for (const [id, u] of Object.entries(users)) {
+      if (u.mic != null) client.setUserVolume(id, 'mic', u.mic);
+      if (u.screen != null) client.setUserVolume(id, 'screen', u.screen);
+      if (u.muted) client.setUserMuted(id, true);
+    }
+  }
+
+  function setUserPref(id, patch) {
+    const p = vprefs();
+    p.users[id] = { ...(p.users[id] || {}), ...patch };
+    saveVprefs(p);
+    const c = S.voice.client;
+    if (!c) return;
+    if ('mic' in patch) c.setUserVolume(id, 'mic', patch.mic);
+    if ('screen' in patch) c.setUserVolume(id, 'screen', patch.screen);
+    if ('muted' in patch) c.setUserMuted(id, patch.muted);
+  }
+
+  function closeContextMenu() {
+    const old = document.querySelector('.ctx-menu');
+    if (old) old.remove();
+  }
+
+  function openUserMenu(ev, id, tile) {
+    closeContextMenu();
+    const saved = (vprefs().users[id]) || {};
+    const slider = (label, key) => {
+      const val = Math.round((saved[key] == null ? 1 : saved[key]) * 100);
+      const out = h('span', { class: 'pct' }, val + '%');
+      const input = h('input', { type: 'range', min: '0', max: '200', step: '5', value: String(val), 'data-role': 'vol-' + key });
+      input.addEventListener('input', () => {
+        out.textContent = input.value + '%';
+        setUserPref(id, { [key]: Number(input.value) / 100 });
+      });
+      return h('div', { class: 'ctx-row' }, h('div', { class: 'ctx-label' }, h('span', null, label), out), input);
+    };
+    const hasStream = voiceMembers(S.voice.channel || '').some((p) => p.id === id && p.screen);
+    const mute = h('input', { type: 'checkbox', 'data-role': 'mute-user' });
+    mute.checked = !!saved.muted;
+    mute.addEventListener('change', () => setUserPref(id, { muted: mute.checked }));
+    const items = [
+      h('div', { class: 'ctx-title' }, nameOf(id)),
+      slider('Volume da voz', 'mic'),
+      hasStream || (tile && tile.dataset.kind === 'screen') ? slider('Volume da transmissão', 'screen') : null,
+      h('label', { class: 'ctx-check' }, mute, h('span', null, 'Silenciar para mim')),
+      h('button', { class: 'ctx-btn', onclick: () => {
+        setUserPref(id, { mic: 1, screen: 1, muted: false });
+        closeContextMenu();
+      } }, 'Redefinir volumes'),
+    ];
+    if (tile) {
+      const v = tile.querySelector('video');
+      items.push(h('button', { class: 'ctx-btn', onclick: () => {
+        S.voice.focus = S.voice.focus === tile.dataset.key ? null : tile.dataset.key;
+        closeContextMenu();
+        renderStage();
+      } }, S.voice.focus === tile.dataset.key ? 'Remover destaque' : 'Destacar'));
+      if (v && !v.hidden) items.push(h('button', { class: 'ctx-btn', onclick: () => {
+        closeContextMenu();
+        v.requestFullscreen && v.requestFullscreen().catch(() => {});
+      } }, 'Tela cheia'));
+    }
+    const menu = h('div', { class: 'ctx-menu', 'data-user': id }, items);
+    document.body.append(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(ev.clientX, innerWidth - r.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(ev.clientY, innerHeight - r.height - 4)) + 'px';
+  }
+
+  document.addEventListener('contextmenu', (ev) => {
+    const el = ev.target.closest && ev.target.closest('[data-user]');
+    if (!el || !S.session || el.closest('.ctx-menu')) return;
+    const id = el.dataset.user;
+    if (id === S.session.user.id) return;
+    ev.preventDefault();
+    openUserMenu(ev, id, el.classList.contains('tile') ? el : null);
+  });
+  document.addEventListener('mousedown', (ev) => {
+    if (!ev.target.closest || !ev.target.closest('.ctx-menu')) closeContextMenu();
+  });
+  window.addEventListener('blur', closeContextMenu);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') closeContextMenu();
+    const c = S.voice.client;
+    if (!c || !ev.ctrlKey || !ev.shiftKey) return;
+    if (ev.code === 'KeyM') {
+      ev.preventDefault();
+      c.setMuted(!c.state().muted);
+    } else if (ev.code === 'KeyD') {
+      ev.preventDefault();
+      c.setDeafened(!c.state().deafened);
+    }
+  });
+
+  async function openVoiceSettings() {
+    let devices = [];
+    try {
+      devices = await navigator.mediaDevices.enumerateDevices();
+    } catch {
+      /* sem lista: mostra só o padrão */
+    }
+    const prefs = vprefs();
+    const select = (kind, current, fallbackLabel) => {
+      const list = devices.filter((d) => d.kind === kind);
+      const sel = h('select', { class: 'input', 'data-role': kind },
+        h('option', { value: '' }, 'Padrão do sistema'),
+        ...list.filter((d) => d.deviceId && d.deviceId !== 'default').map((d, i) =>
+          h('option', { value: d.deviceId }, d.label || `${fallbackLabel} ${i + 1}`)));
+      sel.value = list.some((d) => d.deviceId === current) ? current : '';
+      return sel;
+    };
+    const mic = select('audioinput', prefs.mic, 'Microfone');
+    const cam = select('videoinput', prefs.cam, 'Câmera');
+    const out = select('audiooutput', prefs.out, 'Saída');
+    const canOut = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
+    const check = (key, label, role) => {
+      const box = h('input', { type: 'checkbox', 'data-role': role });
+      box.checked = prefs[key] !== false;
+      box.addEventListener('change', () => change({ [key]: box.checked }, 'mic'));
+      return h('label', { class: 'check' }, box, h('span', null, label));
+    };
+    const change = async (patch, what) => {
+      const p = vprefs();
+      Object.assign(p, patch);
+      saveVprefs(p);
+      const c = S.voice.client;
+      if (!c) return;
+      try {
+        if (what === 'mic') await c.restartMic();
+        else if (what === 'cam') await c.restartCamera();
+        else if (what === 'out') c.setOutputDevice();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    };
+    mic.addEventListener('change', () => change({ mic: mic.value || null }, 'mic'));
+    cam.addEventListener('change', () => change({ cam: cam.value || null }, 'cam'));
+    out.addEventListener('change', () => change({ out: out.value || null }, 'out'));
+    const close = modal([
+      h('h3', null, 'Áudio e vídeo'),
+      h('div', { class: 'field' }, h('label', null, 'Microfone'), mic),
+      canOut ? h('div', { class: 'field' }, h('label', null, 'Saída de som'), out) : null,
+      h('div', { class: 'field' }, h('label', null, 'Câmera'), cam),
+      check('echo', 'Cancelamento de eco', 'opt-echo'),
+      check('noise', 'Supressão de ruído', 'opt-noise'),
+      check('agc', 'Ajuste automático de volume do microfone', 'opt-agc'),
+      h('p', { class: 'hint' }, 'Atalhos durante a chamada: Ctrl+Shift+M silencia o microfone e Ctrl+Shift+D ensurdece. Clique com o botão direito no nome de alguém para ajustar o volume dele.'),
+      h('div', { class: 'row end', style: { marginTop: '14px' } },
+        h('button', { class: 'btn primary', onclick: () => close() }, 'Fechar')),
+    ]);
   }
 
   async function startScreenShare() {
