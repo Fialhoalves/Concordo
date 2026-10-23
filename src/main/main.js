@@ -137,12 +137,12 @@ ipcMain.handle('screen:sources', async () => {
   const own = mainWindow ? mainWindow.getMediaSourceId() : null;
   const sources = await desktopCapturer.getSources({
     types: ['screen', 'window'],
-    thumbnailSize: { width: 320, height: 180 },
-    fetchWindowIcons: false,
+    thumbnailSize: { width: 480, height: 270 },
+    fetchWindowIcons: true,
   });
   return sources
     .filter((x) => x.id !== own && x.name)
-    .map((x) => ({ id: x.id, name: x.name, thumbnail: x.thumbnail.toDataURL() }));
+    .map((x) => ({ id: x.id, name: x.name, thumbnail: x.thumbnail.toDataURL(), icon: x.appIcon && !x.appIcon.isEmpty() ? x.appIcon.resize({ width: 20, height: 20 }).toDataURL() : null }));
 });
 
 ipcMain.handle('screen:prepare', (_event, sel) => {
@@ -373,7 +373,7 @@ async function stopHost() {
   await current.server.close().catch(() => {});
 }
 
-async function startHost({ dataDir, roomName, ownerName, takeoverUserId }) {
+async function startHost({ dataDir, roomName, ownerName, takeoverUserId, takeoverToken }) {
   const fixed = readFixedConfig();
   let server;
   try {
@@ -383,6 +383,7 @@ async function startHost({ dataDir, roomName, ownerName, takeoverUserId }) {
       roomName,
       ownerName,
       takeoverUserId,
+      takeoverToken,
       getPublicUrl: () => (host ? host.publicUrl : null),
       version: app.getVersion(),
       iceServers: iceFromEnv(),
@@ -416,53 +417,62 @@ ipcMain.handle('host:start', async (_event, opts = {}) => {
 });
 
 // ---------- cópia da sala e migração de host ----------
+// Todo membro guarda uma cópia (sem tokens nem convites) de cada sala em que está. Se o host sumir,
+// quem tem a cópia e é o próximo na ordem de sucessão assume. Um trabalho de cópia por sala.
 const SYNC_EVERY_MS = 45000;
-let backupJob = null; // { roomId, timer, running }
-let backupInfo = { roomId: null, at: null, error: null };
+const backupJobs = new Map(); // roomId -> { roomId, url, token, running, timer, tick }
+const backupInfos = new Map(); // roomId -> { roomId, at, error }
 const roomIdOk = (id) => typeof id === 'string' && /^[a-f0-9]{4,32}$/.test(id);
 const backupDir = (roomId) => path.join(app.getPath('userData'), 'backups', roomId);
 
-function stopBackup() {
-  if (backupJob) clearInterval(backupJob.timer);
-  backupJob = null;
+function stopBackup(roomId) {
+  const ids = roomId ? [roomId] : [...backupJobs.keys()];
+  for (const id of ids) {
+    const job = backupJobs.get(id);
+    if (job) clearInterval(job.timer);
+    backupJobs.delete(id);
+  }
 }
 
 function startBackup({ url, token, roomId }) {
-  if (backupJob && backupJob.roomId === roomId && backupJob.url === url && backupJob.token === token) return;
-  stopBackup();
+  const prev = backupJobs.get(roomId);
+  if (prev && prev.url === url && prev.token === token) return;
+  stopBackup(roomId);
   const job = { roomId, url, token, running: false, timer: null };
   const tick = async () => {
     if (job.running) return;
     job.running = true;
     try {
-      await backup.syncOnce({ dir: backupDir(roomId), url, token });
+      await backup.syncOnce({ dir: backupDir(roomId), url: job.url, token: job.token });
       const d = backup.describe(backupDir(roomId));
-      backupInfo = { roomId, at: d ? d.at : Date.now(), error: null };
+      backupInfos.set(roomId, { roomId, at: d ? d.at : Date.now(), error: null });
     } catch (e) {
       const d = backup.describe(backupDir(roomId));
-      backupInfo = { roomId, at: d ? d.at : null, error: e.message };
+      backupInfos.set(roomId, { roomId, at: d ? d.at : null, error: e.message });
     } finally {
       job.running = false;
-      send('backup:status', backupInfo);
+      send('backup:status', backupInfos.get(roomId));
     }
   };
   job.tick = tick;
   job.timer = setInterval(tick, SYNC_EVERY_MS);
-  backupJob = job;
+  backupJobs.set(roomId, job);
   tick();
 }
 
 ipcMain.handle('backup:start', (_event, args = {}) => {
-  if (host || !roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return false;
+  if (!roomIdOk(args.roomId) || !isHttpUrl(args.url) || typeof args.token !== 'string') return false;
+  if (host && host.server.store.room.id === args.roomId) return false; // a sala que eu mesmo hospedo não precisa de cópia
   startBackup(args);
   return true;
 });
-ipcMain.handle('backup:sync-now', async () => {
-  if (backupJob && backupJob.tick) await backupJob.tick();
+ipcMain.handle('backup:sync-now', async (_event, roomId) => {
+  const job = backupJobs.get(roomId);
+  if (job && job.tick) await job.tick();
   return true;
 });
-ipcMain.handle('backup:stop', () => {
-  stopBackup();
+ipcMain.handle('backup:stop', (_event, roomId) => {
+  stopBackup(roomIdOk(roomId) ? roomId : undefined);
   return true;
 });
 ipcMain.handle('backup:status', (_event, roomId) => {
@@ -476,8 +486,9 @@ ipcMain.handle('backup:takeover', async (_event, args = {}) => {
   if (!roomIdOk(args.roomId) || typeof args.userId !== 'string') throw new Error('Dados inválidos.');
   const dir = backupDir(args.roomId);
   if (!backup.describe(dir)) throw new Error('Ainda não há cópia desta sala neste computador.');
-  stopBackup();
-  await startHost({ dataDir: dir, takeoverUserId: args.userId });
+  stopBackup(args.roomId);
+  if (typeof args.token !== 'string' || !args.token) throw new Error('Dados inválidos.');
+  await startHost({ dataDir: dir, takeoverUserId: args.userId, takeoverToken: args.token });
   return hostSnapshot();
 });
 

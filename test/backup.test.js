@@ -43,9 +43,15 @@ test('sucessor copia a sala de forma incremental e assume como dono', async () =
     const st = await api(A, beto.token, 'GET', '/api/state');
     assert.equal(st.json.heir, beto.user.id);
 
-    // só o herdeiro pode copiar
-    assert.equal((await api(A, cris.token, 'GET', '/api/backup')).status, 403);
-    assert.equal((await api(A, ana.token, 'GET', '/api/backup')).status, 403);
+    // qualquer membro pode manter cópia, mas a cópia nunca leva tokens nem convites
+    A.store.createInvite({ maxUses: 1, hours: 1 });
+    const crisCopy = await api(A, cris.token, 'GET', '/api/backup');
+    assert.equal(crisCopy.status, 200);
+    assert.ok(!JSON.stringify(crisCopy.json.state).includes(beto.token), 'token vazou na cópia');
+    assert.ok(!JSON.stringify(crisCopy.json.state).includes('"token"'), 'campo token na cópia');
+    assert.deepEqual(crisCopy.json.state.invites, {});
+    assert.equal((await api(A, 'token-falso', 'GET', '/api/backup')).status, 401);
+    assert.deepEqual(st.json.succession, [beto.user.id, cris.user.id]);
 
     // conteúdo: mensagem com acento + arquivo
     A.store.addMessage({ channel: 'geral', user: ana, text: 'olá, avó ✓' });
@@ -73,8 +79,10 @@ test('sucessor copia a sala de forma incremental e assume como dono', async () =
 
     // o sucessor assume usando a cópia
     fs.cpSync(copy, dirB, { recursive: true });
-    B = await createConcordoServer({ dataDir: dirB, takeoverUserId: beto.user.id, getPublicUrl: () => 'http://y' });
+    B = await createConcordoServer({ dataDir: dirB, takeoverUserId: beto.user.id, takeoverToken: beto.token, getPublicUrl: () => 'http://y' });
     assert.equal(B.owner.id, beto.user.id);
+    assert.equal(B.owner.token, beto.token);
+    assert.ok(!fs.readFileSync(path.join(copy, 'state.json'), 'utf8').includes(cris.token), 'a cópia em disco tem o token do Cris');
     const me = await api(B, beto.token, 'GET', '/api/me');
     assert.equal(me.json.user.role, 'owner');
     // os outros reconhecem a sala com o mesmo token

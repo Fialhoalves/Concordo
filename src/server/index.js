@@ -93,12 +93,14 @@ async function createConcordoServer(opts = {}) {
     iceServers = DEFAULT_ICE, // STUN/TURN que os clientes usam nas chamadas
     version = '0.0.0',
     takeoverUserId, // sucessor assumindo uma sala copiada: vira o dono
+    takeoverToken, // token do próprio sucessor (as cópias não trazem tokens)
   } = opts;
   if (!dataDir) throw new Error('dataDir é obrigatório');
 
   const store = new Store(dataDir);
   if (roomName) store.setRoomName(cleanName(roomName, 40));
   if (takeoverUserId && !store.transferOwner(takeoverUserId)) throw new Error('usuário da cópia não encontrado');
+  if (takeoverUserId && takeoverToken) store.adoptToken(takeoverUserId, takeoverToken);
   const owner = ownerName && !takeoverUserId ? store.ensureOwner(cleanName(ownerName)) : store.getOwner();
 
   const pub = (u) => store.publicUser(u);
@@ -297,7 +299,7 @@ async function createConcordoServer(opts = {}) {
       }
       const user = store.createUser(name);
       broadcast({ t: 'user', user: pub(user) });
-      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null }); // o sucessor padrão é o primeiro a entrar
+      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null, succession: store.succession() }); // o sucessor padrão é o primeiro a entrar
       return sendJson(res, 201, { token: user.token, user: pub(user), room: store.room });
     }
 
@@ -321,6 +323,7 @@ async function createConcordoServer(opts = {}) {
         voice: voiceSnapshot(),
         ice: iceServers,
         heir: (store.getHeir() || {}).id || null,
+        succession: store.succession(),
       });
     }
 
@@ -379,8 +382,7 @@ async function createConcordoServer(opts = {}) {
     }
 
     if (method === 'GET' && p === '/api/backup') {
-      const heir = store.getHeir();
-      if (!heir || heir.id !== user.id) throw httpError(403, 'só o sucessor da sala pode copiar os dados');
+      // qualquer membro pode manter uma cópia (sem tokens nem convites); ela só serve para assumir a sala
       const offset = parseInt(url.searchParams.get('offset'), 10) || 0;
       if (parseInt(url.searchParams.get('rev'), 10) === store.rev && offset === store.messageBytes()) {
         return sendJson(res, 200, { unchanged: true, rev: store.rev });
@@ -392,7 +394,7 @@ async function createConcordoServer(opts = {}) {
       requireOwner(user);
       const body = await readJson(req);
       if (!store.setHeir(String(body.userId || ''))) throw httpError(400, 'usuário inválido para sucessor');
-      broadcast({ t: 'heir', id: store.getHeir().id });
+      broadcast({ t: 'heir', id: store.getHeir().id, succession: store.succession() });
       return sendJson(res, 200, { ok: true });
     }
 
@@ -450,7 +452,7 @@ async function createConcordoServer(opts = {}) {
       for (const ws of clients.get(target.id) || []) ws.close(4001, 'removido');
       clients.delete(target.id);
       broadcast({ t: 'user_removed', id: target.id });
-      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null });
+      broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null, succession: store.succession() });
       broadcastVoice();
       broadcast({ t: 'presence', online: online() });
       return sendJson(res, 200, { ok: true });
@@ -631,11 +633,10 @@ async function createConcordoServer(opts = {}) {
 
   // O dono vai sair: avisa todos e dá alguns segundos para o sucessor copiar a versão final.
   async function announceLeaving() {
-    const heir = store.getHeir();
-    const heirOnline = !!(heir && clients.has(heir.id));
-    broadcast({ t: 'host_leaving', heir: heir ? heir.id : null });
-    if (heirOnline) await new Promise((r) => setTimeout(r, 3000));
-    return heirOnline;
+    const heirId = store.succession().find((id) => id !== owner.id && clients.has(id)) || null;
+    broadcast({ t: 'host_leaving', heir: heirId });
+    if (heirId) await new Promise((r) => setTimeout(r, 3000));
+    return !!heirId;
   }
 
   async function close() {

@@ -182,3 +182,9 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 - **Onde ficam os dados:** mensagens e arquivos ficam no computador do host e numa cópia no computador do sucessor (atualizada a cada ~45 s e na hora da passagem). Os demais só guardam o que estão vendo na tela.
 - **Sons:** entrar/sair da chamada, outra pessoa entrar/sair, mutar, ensurdecer, câmera e tela, queda de conexão. Sintetizados no app, com liga/desliga e volume em Configurações.
 - **Chat:** responder, editar, apagar, fixar, buscar (todos os canais), @menções com sugestão e aviso só quando citam você, "fulano está digitando…".
+
+## v0.10.0
+
+- **Todos guardam cópia:** cada membro mantém, em segundo plano, uma cópia da sala (mensagens, arquivos e membros) no próprio computador. As cópias **não levam tokens nem convites**: ninguém consegue se passar por outro membro com a cópia. Se o host sair, assume quem tem cópia e vem primeiro na ordem de sucessão (quem entrou antes); os demais esperam um pouco e só assumem se ninguém publicou o endereço novo. Dá para desligar em Configurações (a cópia usa disco).
+- **Voz:** indicador de qualidade de conexão por pessoa (ping e perda de pacotes), destaque animado de quem está falando e seletor de tela em duas etapas (abas Telas/Janelas, prévia ao vivo, ícone do app).
+- **Mascote:** na boas-vindas, nos estados vazios e como ícone do app (instalador, janela e bandeja).

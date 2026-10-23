@@ -409,6 +409,48 @@
       }
     }
 
+    // Qualidade da conexão com cada pessoa (ping e perda de pacotes), a cada 3 s.
+    async function qualityPoll() {
+      let dirty = false;
+      for (const peer of peers.values()) {
+        if (peer.pc.connectionState !== 'connected') {
+          if (peer.quality) {
+            peer.quality = null;
+            dirty = true;
+          }
+          continue;
+        }
+        try {
+          let rtt = null;
+          let lost = 0;
+          let recv = 0;
+          (await peer.pc.getStats()).forEach((r) => {
+            if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded' && typeof r.currentRoundTripTime === 'number') {
+              rtt = Math.round(r.currentRoundTripTime * 1000);
+            }
+            if (r.type === 'inbound-rtp') {
+              lost += r.packetsLost || 0;
+              recv += r.packetsReceived || 0;
+            }
+          });
+          const prev = peer.qprev || { lost, recv };
+          const dl = Math.max(0, lost - prev.lost);
+          const dr = Math.max(0, recv - prev.recv);
+          peer.qprev = { lost, recv };
+          const loss = dl + dr >= 20 ? Math.round((100 * dl) / (dl + dr)) : peer.quality ? peer.quality.loss : 0;
+          const level = (rtt != null && rtt > 300) || loss > 8 ? 'bad' : (rtt != null && rtt > 150) || loss > 3 ? 'ok' : 'good';
+          const q = peer.quality;
+          if (!q || q.level !== level || q.rtt !== rtt || q.loss !== loss) {
+            peer.quality = { rtt, loss, level };
+            dirty = true;
+          }
+        } catch {
+          /* par fechando */
+        }
+      }
+      if (dirty) changed();
+    }
+
     function ensurePeer(id, { initiator }) {
       let peer = peers.get(id);
       if (peer) return peer;
@@ -469,7 +511,12 @@
         changed();
       };
 
-      if (!watchTimer) watchTimer = setInterval(watchdog, 3000);
+      if (!watchTimer) {
+        watchTimer = setInterval(() => {
+          watchdog();
+          qualityPoll();
+        }, 3000);
+      }
       tuneAll();
       let added = 0;
       for (const [kind, stream] of [['mic', local.mic], ['cam', local.cam], ['screen', local.screen]]) {
@@ -825,6 +872,7 @@
       }),
       speaking: (id) => speaking.has(id),
       peerIds: () => [...peers.keys()],
+      quality: (id) => (peers.get(id) || {}).quality || null,
       peer(id) {
         const p = peers.get(id);
         if (!p) return null;

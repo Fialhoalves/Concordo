@@ -9,6 +9,7 @@
   const $banner = document.getElementById('banner');
   const $toasts = document.getElementById('toasts');
   // ícones do kit (SVG inline, herdam a cor do texto)
+  const mascot = (name, size, alt = '') => h('img', { class: 'mascot', src: `assets/mascot/${name}.png`, width: size, height: size, alt, draggable: 'false' });
   const sfx = (name) => window.ConcordoSounds && window.ConcordoSounds.play(name);
   const ico = (name, size = 20, cls) => window.ConcordoIcons.icon(name, { size, class: cls });
 
@@ -191,6 +192,7 @@
     heir: null,
     backup: null, // { at, error } da cópia local da sala (quando sou o sucessor)
     afterTakeover: false,
+    succession: [], // ids dos membros na ordem em que assumem a sala se o host sumir
     replyTo: null, // { id, author, text, channel }
     typing: new Map(), // canal -> Map(userId -> timer)
     voice: { rooms: {}, client: null, channel: null, joining: null, focus: null },
@@ -269,6 +271,7 @@
     const rooms = getRooms();
     delete rooms[roomId];
     LS.set('concordo.rooms', rooms);
+    if (bridge.backupStop) bridge.backupStop(roomId).catch(() => {});
   }
 
   // ============================================================
@@ -312,8 +315,8 @@
     mount(
       h('div', { class: 'center' },
         h('div', { class: 'brand' },
-          h('img', { class: 'brand-symbol', src: 'assets/brand/concordo-symbol.svg', alt: '' }),
-          h('div', { class: 'brand-name' }, 'Concordo'),
+          mascot('acenando-grande', 150, 'Mascote do Concordo acenando'),
+          h('div', { class: 'brand-name' }, h('img', { class: 'brand-symbol', src: 'assets/brand/concordo-symbol.svg', alt: '' }), 'Concordo'),
           h('div', { class: 'brand-sign' }, 'Converse · Compartilhe · Juntos')),
         h('p', { class: 'tagline' }, 'Bate-papo entre amigos que roda no seu PC. Sem cadastro e sem servidor de terceiros.'),
         h('div', { class: 'cards' },
@@ -769,6 +772,9 @@
       c.ws = ws;
       ws.onopen = () => {
         c.retry = 0;
+        if (!c.info.local && keepCopy() && bridge.backupStart) {
+          bridge.backupStart({ url: c.info.url, token: c.info.token, roomId: id }).catch(() => {});
+        }
       };
       ws.onmessage = (ev) => {
         let d;
@@ -897,6 +903,7 @@
     S.limits = st.limits;
     S.ice = st.ice || [];
     S.heir = st.heir || null;
+    S.succession = st.succession || [];
     S.voice.rooms = st.voice || {};
     S.session.user = st.you;
     S.session.room = st.room;
@@ -929,6 +936,8 @@
             }, avatar(p.id, name), h('span', { class: 'name' }, name),
               p.screen ? h('span', { class: 'live', title: 'Compartilhando a tela' }, 'AO VIVO') : null,
               p.cam ? h('span', { title: 'Câmera ligada' }, ico('camera', 14)) : null,
+              voiceSpeaking(p.id) ? eqEl() : null,
+              signalEl(p.id),
               p.deafened ? h('span', { title: 'Sem áudio' }, ico('headphones-off', 14)) : p.muted ? h('span', { title: 'Microfone desligado' }, ico('microphone-off', 14)) : null);
           }));
       }),
@@ -1040,7 +1049,7 @@
     const prevTop = box.scrollTop;
     const nodes = [];
     if (entry.hasMore) nodes.push(h('button', { class: 'btn small load-older', onclick: loadOlder }, 'Carregar mensagens anteriores'));
-    if (!entry.list.length) nodes.push(h('div', { class: 'empty' }, 'Nada por aqui ainda. Mande a primeira mensagem!'));
+    if (!entry.list.length) nodes.push(h('div', { class: 'empty' }, mascot('feliz', 96), h('div', null, 'Nada por aqui ainda. Mande a primeira mensagem!')));
     let prev = null;
     for (const m of entry.list) {
       nodes.push(...messageNodes(m, prev));
@@ -1307,7 +1316,7 @@
         if (mine !== seq) return;
         list.replaceChildren(...(r.messages.length
           ? r.messages.map((m) => resultItem(m, close))
-          : [h('div', { class: 'hint' }, 'Nada encontrado.')]));
+          : [h('div', { class: 'empty small' }, mascot('pensativo', 64), h('div', null, 'Nada encontrado.'))]));
       } catch (e) {
         list.replaceChildren(h('div', { class: 'hint error' }, e.message));
       }
@@ -1345,7 +1354,7 @@
     ]);
     try {
       const r = await api('GET', `/api/channels/${S.current}/pins`);
-      list.replaceChildren(...(r.messages.length ? r.messages.map((m) => resultItem(m, close)) : [h('div', { class: 'hint' }, 'Nenhuma mensagem fixada neste canal. Use o alfinete ao passar o mouse sobre uma mensagem.')]));
+      list.replaceChildren(...(r.messages.length ? r.messages.map((m) => resultItem(m, close)) : [h('div', { class: 'empty small' }, mascot('pensativo', 64), h('div', null, 'Nenhuma mensagem fixada neste canal. Use o alfinete ao passar o mouse sobre uma mensagem.'))]));
     } catch (e) {
       list.replaceChildren(h('div', { class: 'hint error' }, e.message));
     }
@@ -1691,9 +1700,14 @@
         setConn('reconnecting');
         renderTakeoverBar();
         // o host sumiu de vez: o sucessor assume sozinho (os outros o seguem pelo mesmo ponto de encontro)
-        if (iAmHeir() && S.retry >= 8 && S.session.rv && !S.autoTakeover) {
-          S.autoTakeover = true;
-          return takeOverRoom({ auto: true });
+        if (myRank() >= 0 && S.retry >= 8 + myRank() * 4 && S.session.rv && !S.autoTakeover && !S.checkingCopy) {
+          S.checkingCopy = true;
+          const copy = await bridge.backupStatus(S.session.room.id).catch(() => null);
+          S.checkingCopy = false;
+          if (copy && !S.autoTakeover && !S.leaving && S.session) {
+            S.autoTakeover = true;
+            return takeOverRoom({ auto: true });
+          }
         }
         return scheduleReconnect();
       }
@@ -1738,6 +1752,7 @@
         return renderChannels();
       case 'heir':
         S.heir = d.id;
+        if (d.succession) S.succession = d.succession;
         renderMembers();
         syncBackup();
         return;
@@ -1764,14 +1779,22 @@
   // ============================================================
   // sucessor: cópia da sala e migração de host
   // ============================================================
-  const iAmHeir = () => !!(S.session && !S.isHost && S.heir && S.heir === S.session.user.id);
+  // Todo membro guarda uma cópia da sala. Se o host some, assume quem tem cópia e vem primeiro na ordem de sucessão;
+  // os demais esperam um pouco mais e, antes de assumir, sempre conferem se alguém já publicou o endereço novo.
+  const myRank = () => (S.session && !S.isHost ? S.succession.indexOf(S.session.user.id) : -1);
+  const iAmHeir = () => myRank() === 0;
+  const keepCopy = () => LS.get('concordo.keepCopy', true) !== false;
 
   function syncBackup() {
     if (!bridge.backupStart || !S.session) return;
-    if (iAmHeir()) {
+    if (!S.isHost && keepCopy()) {
       bridge.backupStart({ url: S.session.url, token: S.session.token, roomId: S.session.room.id }).catch(() => {});
+      bridge.backupStatus(S.session.room.id).then((info) => {
+        if (info && !S.backup) S.backup = info;
+        renderHeirNote();
+      }).catch(() => {});
     } else if (!S.isHost) {
-      bridge.backupStop().catch(() => {});
+      bridge.backupStop(S.session.room.id).catch(() => {});
     }
     renderHeirNote();
   }
@@ -1785,20 +1808,20 @@
   function renderHeirNote() {
     const ui = S.ui;
     if (!ui || !ui.heirNote) return;
-    if (!iAmHeir()) {
+    if (S.isHost || !S.session || !keepCopy()) {
       ui.heirNote.hidden = true;
       return;
     }
     ui.heirNote.hidden = false;
     ui.heirNote.replaceChildren(ico('shield-lock', 14),
-      document.createTextNode('Você é o sucessor desta sala · cópia: ' + (S.backup && S.backup.error ? 'falhou (' + S.backup.error + ')' : ago(S.backup && S.backup.at))));
+      document.createTextNode((iAmHeir() ? 'Você é o sucessor desta sala · cópia: ' : 'Cópia da sala neste computador: ') + (S.backup && S.backup.error ? 'falhou (' + S.backup.error + ')' : ago(S.backup && S.backup.at))));
   }
 
   // O host some: o sucessor vê um aviso fixo e decide se assume.
   function renderTakeoverBar() {
     const ui = S.ui;
     if (!ui || !ui.takeover) return;
-    const lost = iAmHeir() && S.retry >= 5 && !S.leaving;
+    const lost = myRank() >= 0 && S.retry >= 5 + myRank() * 2 && !S.leaving;
     if (!lost) {
       ui.takeover.hidden = true;
       ui.takeover.replaceChildren();
@@ -1816,14 +1839,14 @@
   }
 
   // O host avisou que vai sair: o sucessor copia a versão final e assume na hora; os outros esperam o endereço novo.
-  async function onHostLeaving() {
+  async function onHostLeaving(d) {
     if (S.isHost || !S.session) return;
     S.handoff = { at: Date.now(), url: S.session.url };
     if (S.voice.client) S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
     toast('O host está saindo. A sala passa para o sucessor em instantes…', 'ok');
-    if (iAmHeir() && S.session.rv && !S.autoTakeover) {
+    if (d && d.heir === S.session.user.id && S.session.rv && !S.autoTakeover) {
       try {
-        await bridge.backupSyncNow();
+        await bridge.backupSyncNow(S.session.room.id);
       } catch {
         /* usa a última cópia que existir */
       }
@@ -1842,7 +1865,7 @@
         S.voiceRejoin = { channel: S.voice.channel, at: Date.now() };
         leaveVoice({ silent: true, local: true });
       }
-      const info = await bridge.backupTakeover({ roomId, userId: me });
+      const info = await bridge.backupTakeover({ roomId, userId: me, token: S.session.token });
       closeSocket();
       S.afterTakeover = !auto;
       enterHost(info);
@@ -1859,6 +1882,20 @@
   // ============================================================
   function wsSend(obj) {
     if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(obj));
+  }
+
+  // barrinhas de "falando"
+  const eqEl = () => h('span', { class: 'eq', 'aria-label': 'Falando' }, h('i'), h('i'), h('i'));
+
+  // sinal de conexão com a pessoa: ping e perda de pacotes
+  function signalEl(id) {
+    const c = S.voice.client;
+    if (!c || !S.session || id === S.session.user.id) return null;
+    const q = c.quality(id);
+    if (!q) return null;
+    const word = { good: 'boa', ok: 'regular', bad: 'ruim' }[q.level];
+    const title = `Conexão ${word}: ${q.rtt != null ? q.rtt + ' ms' : 'ping ?'}${q.loss ? ', perda de ' + q.loss + '%' : ''}`;
+    return h('span', { class: 'sig ' + q.level, title, role: 'img', 'aria-label': title, 'data-q': q.level }, h('i'), h('i'), h('i'));
   }
 
   const voiceSpeaking = (id) => !!(S.voice.client && S.voice.client.speaking(id));
@@ -2059,6 +2096,8 @@
     const base = nameOf(id) + (me ? ' (você)' : '') + (kind === 'screen' ? ' — tela' : '');
     const state = kind === 'user' && entry ? (entry.deafened ? ico('headphones-off', 14) : entry.muted ? ico('microphone-off', 14) : null) : null;
     label.replaceChildren(document.createTextNode(base), ...(state ? [state] : []),
+      ...(kind === 'user' && voiceSpeaking(id) ? [eqEl()] : []),
+      ...(kind === 'user' && !me ? [signalEl(id)].filter(Boolean) : []),
       document.createTextNode(conn === 'connecting' ? ' · conectando…' : conn === 'failed' ? ' · sem conexão' : ''));
   }
 
@@ -2075,7 +2114,7 @@
       stage.className = 'stage lobby';
       stage.replaceChildren(
         h('div', { class: 'lobby-card' },
-          h('div', { class: 'lobby-icon' }, ico('voice', 44)),
+          people.length ? h('div', { class: 'lobby-icon' }, ico('voice', 44)) : mascot('oculos', 96, ''),
           h('h2', null, ch.name),
           h('p', { class: 'hint' }, people.length
             ? people.map((p) => nameOf(p.id)).join(', ') + (people.length === 1 ? ' está aqui.' : ' estão aqui.')
@@ -2332,6 +2371,14 @@
     soundVol.value = String(LS.get('concordo.soundVolume', 0.6));
     soundVol.addEventListener('input', () => LS.set('concordo.soundVolume', Number(soundVol.value)));
     soundVol.addEventListener('change', () => sfx('unmute'));
+    const copyBox = h('input', { type: 'checkbox', 'data-role': 'keep-copy' });
+    copyBox.checked = keepCopy();
+    copyBox.addEventListener('change', () => {
+      LS.set('concordo.keepCopy', copyBox.checked);
+      if (!copyBox.checked && bridge.backupStop) bridge.backupStop().catch(() => {});
+      syncBackground();
+      if (S.session) syncBackup();
+    });
     const appCheck = (key, label) => {
       const box = h('input', { type: 'checkbox', 'data-role': 'app-' + key, disabled: true });
       if (bridge.getSettings) {
@@ -2372,6 +2419,7 @@
       themeChoice(),
       h('h4', { class: 'sub' }, 'Aplicativo'),
       appCheck('closeToTray', 'Ao fechar a janela, continuar na bandeja do sistema'),
+      h('label', { class: 'check' }, copyBox, h('span', null, 'Guardar uma cópia das salas neste computador (permite assumir a sala se o host sair; usa disco)')),
       appCheck('autoStart', 'Abrir o Concordo junto com o Windows (em segundo plano)'),
       h('div', { class: 'field' }, h('label', null, 'Avisar de mensagens novas'), notifySel),
       h('label', { class: 'check' }, soundsBox, h('span', null, 'Sons de chamada (entrar, sair, mutar, câmera, tela)')),
@@ -2407,12 +2455,22 @@
       await v.client.startScreen({ audio: false });
       return sfx('screenOn');
     }
-    const sources = await bridge.screenSources();
+    let sources = await bridge.screenSources();
     if (!sources.length) throw new Error('Não encontrei nenhuma tela ou janela para compartilhar.');
     const audio = h('input', { type: 'checkbox', 'data-role': 'screen-audio' });
     audio.checked = LS.get('concordo.screenAudio', true) !== false; // ligado por padrão
+    const kindOf = (src) => (String(src.id).startsWith('screen:') ? 'screen' : 'window');
+    let tab = sources.some((x) => kindOf(x) === 'screen') ? 'screen' : 'window';
+    let selected = null;
     let close = null;
-    const pick = (src) => async () => {
+    const grid = h('div', { class: 'source-grid' });
+    const preview = h('div', { class: 'source-preview', hidden: true });
+    const go = h('button', { class: 'btn primary', 'data-act': 'share-go', disabled: true }, 'Compartilhar');
+    const tabs = h('div', { class: 'tabs', role: 'tablist' });
+
+    const share = async () => {
+      if (!selected) return;
+      const src = selected;
       close();
       await voiceAction(async () => {
         LS.set('concordo.screenAudio', audio.checked);
@@ -2424,21 +2482,84 @@
         }
       });
     };
+    go.addEventListener('click', share);
+
+    const renderTabs = () => tabs.replaceChildren(...['screen', 'window'].map((k) => {
+      const n = sources.filter((x) => kindOf(x) === k).length;
+      return h('button', {
+        class: 'tab' + (k === tab ? ' active' : ''), role: 'tab', 'aria-selected': k === tab ? 'true' : 'false', 'data-tab': k,
+        onclick: () => {
+          tab = k;
+          renderTabs();
+          renderGrid();
+        },
+      }, (k === 'screen' ? 'Telas inteiras' : 'Janelas') + ` (${n})`);
+    }));
+
+    const renderPreview = () => {
+      preview.hidden = !selected;
+      go.disabled = !selected;
+      if (!selected) return preview.replaceChildren();
+      preview.replaceChildren(
+        h('img', { src: selected.thumbnail, alt: '' }),
+        h('div', { class: 'source-preview-name' }, selected.icon ? h('img', { class: 'app-icon', src: selected.icon, alt: '' }) : null, selected.name));
+    };
+
+    const renderGrid = () => {
+      const list = sources.filter((x) => kindOf(x) === tab);
+      grid.replaceChildren(...(list.length ? list.map((src) =>
+        h('button', {
+          class: 'source' + (selected && selected.id === src.id ? ' selected' : ''), 'data-source': src.id, type: 'button',
+          onclick: () => {
+            selected = src;
+            renderGrid();
+            renderPreview();
+          },
+          ondblclick: share,
+        }, h('img', { src: src.thumbnail, alt: '' }),
+        h('span', null, src.icon ? h('img', { class: 'app-icon', src: src.icon, alt: '' }) : null, h('b', null, src.name))))
+        : [h('div', { class: 'hint' }, 'Nada por aqui agora.')]));
+    };
+
     close = modal([
       h('h3', null, 'Compartilhar tela'),
+      tabs,
+      grid,
+      preview,
       h('div', { class: 'row quality-row' }, ...qualityFields('screen').slice(0, 2)),
-      h('div', { class: 'source-grid' },
-        ...sources.map((src) =>
-          h('button', { class: 'source', 'data-source': src.id, onclick: pick(src) },
-            h('img', { src: src.thumbnail, alt: '' }),
-            h('span', null, src.name)))),
       h('label', { class: 'check' }, audio, h('span', null, 'Compartilhar também o som do computador')),
       h('div', { class: 'hint' }, 'No Windows o som é do computador inteiro (não dá para separar por janela). O Concordo tenta não reenviar a voz dos seus amigos; use fones de ouvido para evitar eco.'),
       h('div', { class: 'row end', style: { marginTop: '14px' } },
-        h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancelar')),
+        h('button', { class: 'btn ghost', onclick: () => close() }, 'Cancelar'),
+        go),
     ]);
-  }
+    renderTabs();
+    renderGrid();
 
+    // as miniaturas se atualizam enquanto a janela está aberta (janelas novas aparecem, a prévia acompanha)
+    const timer = setInterval(async () => {
+      if (!document.body.contains(grid)) return clearInterval(timer);
+      try {
+        const fresh = await bridge.screenSources();
+        const ids = (list) => list.map((x) => x.id).join('|');
+        const changedList = ids(fresh) !== ids(sources);
+        sources = fresh;
+        if (selected) selected = fresh.find((x) => x.id === selected.id) || null;
+        if (changedList) {
+          renderTabs();
+          renderGrid();
+        } else {
+          for (const src of fresh) {
+            const img = grid.querySelector(`.source[data-source="${CSS.escape(src.id)}"] img`);
+            if (img) img.src = src.thumbnail;
+          }
+        }
+        renderPreview();
+      } catch {
+        /* tenta de novo no próximo ciclo */
+      }
+    }, 3000);
+  }
 
   // ============================================================
   // convites e canais (dono da sala)
@@ -2528,7 +2649,6 @@
   function teardownChat() {
     S.leaving = true;
     if (S.voice.client) leaveVoice({ silent: true, local: true });
-    if (bridge.backupStop && !S.isHost) bridge.backupStop().catch(() => {});
     closeSocket();
     S.session = null;
     S.isHost = false;
@@ -2585,6 +2705,7 @@
     S.leaving = true;
     S.hosted = null;
     mount(h('div', { class: 'center' }, h('div', { class: 'panel' },
+      mascot('acenando', 96),
       h('h2', null, 'Passando a sala…'),
       h('p', { class: 'hint' }, 'O sucessor está assumindo. Você volta para a sala como membro em instantes.'))));
     try {
@@ -2662,7 +2783,7 @@
     });
     bridge.on('deeplink', handleDeepLink);
     bridge.on('backup:status', (ev) => {
-      S.backup = ev;
+      if (S.session && ev && ev.roomId === S.session.room.id) S.backup = ev;
       renderHeirNote();
     });
 

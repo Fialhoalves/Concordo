@@ -26,6 +26,8 @@ function slugChannel(raw) {
     .slice(0, 24);
 }
 
+const hashToken = (t) => crypto.createHash('sha256').update(String(t || '')).digest('hex');
+
 class Store {
   constructor(dir) {
     this.dir = dir;
@@ -36,7 +38,12 @@ class Store {
 
     this.state = this._loadState();
     this.tokenIndex = new Map();
-    for (const u of Object.values(this.state.users)) this.tokenIndex.set(u.token, u.id);
+    // O índice usa o HASH do token: cópias da sala (que vão para todos os membros) só levam o hash,
+    // então ninguém consegue se passar por outro membro com a cópia em mãos.
+    for (const u of Object.values(this.state.users)) {
+      if (u.token) u.tokenHash = hashToken(u.token);
+      if (u.tokenHash) this.tokenIndex.set(u.tokenHash, u.id);
+    }
 
     this._normalizeChannels();
     this.messages = new Map();
@@ -148,7 +155,7 @@ class Store {
   }
 
   userByToken(token) {
-    const id = this.tokenIndex.get(String(token || ''));
+    const id = this.tokenIndex.get(hashToken(token));
     return id ? this.state.users[id] || null : null;
   }
 
@@ -167,8 +174,9 @@ class Store {
 
   createUser(name, role = 'member') {
     const user = { id: rid(6), name, token: rid(24), role, createdAt: Date.now() };
+    user.tokenHash = hashToken(user.token);
     this.state.users[user.id] = user;
-    this.tokenIndex.set(user.token, user.id);
+    this.tokenIndex.set(user.tokenHash, user.id);
     this.save();
     return user;
   }
@@ -186,10 +194,28 @@ class Store {
   removeUser(id) {
     const u = this.state.users[id];
     if (!u) return false;
-    this.tokenIndex.delete(u.token);
+    this.tokenIndex.delete(u.tokenHash || hashToken(u.token));
     delete this.state.users[id];
     this.save();
     return true;
+  }
+
+  // Quem assume a sala precisa de um token só seu para falar com o próprio servidor.
+  adoptToken(id, token) {
+    const u = this.state.users[id];
+    if (!u || !token) return false;
+    u.token = String(token);
+    u.tokenHash = hashToken(u.token);
+    this.tokenIndex.set(u.tokenHash, id);
+    this.save();
+    return true;
+  }
+
+  // ordem de sucessão: o escolhido primeiro, depois quem entrou antes (nunca o dono)
+  succession() {
+    const heir = this.getHeir();
+    const rest = this.users().filter((u) => u.role !== 'owner' && (!heir || u.id !== heir.id)).sort((a, b) => a.createdAt - b.createdAt);
+    return (heir ? [heir, ...rest] : rest).map((u) => u.id);
   }
 
   // ---- sucessor (herdeiro) e transferência da sala ----
@@ -229,6 +255,16 @@ class Store {
     }
   }
 
+  // Estado que vai para as cópias dos membros: sem tokens de acesso nem convites abertos.
+  backupState() {
+    const users = {};
+    for (const [id, u] of Object.entries(this.state.users)) {
+      const { token, ...rest } = u; // eslint-disable-line no-unused-vars
+      users[id] = { ...rest, tokenHash: u.tokenHash || hashToken(u.token) };
+    }
+    return { ...this.state, users, invites: {} };
+  }
+
   // Cópia incremental: o estado inteiro (pequeno) + só o que foi acrescentado em messages.jsonl.
   exportBackup(offset = 0) {
     this.flush();
@@ -254,7 +290,7 @@ class Store {
     return {
       v: 1,
       rev: this.rev,
-      state: this.state,
+      state: this.backupState(),
       reset,
       offset: size,
       chunk,
