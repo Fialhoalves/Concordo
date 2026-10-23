@@ -54,8 +54,8 @@ Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo 
 ## Limites conhecidos
 
 - **O host precisa estar com o app aberto** (e o PC ligado). Fechou, a sala some até ele abrir de novo.
-- **O endereço do túnel muda a cada vez que o host inicia a sala.** Quick tunnels são pensados para testes e não têm garantia de disponibilidade.
-  Para um endereço fixo, o caminho é um *named tunnel* da Cloudflare (precisa de conta e domínio).
+- **Por padrão, o endereço do túnel muda a cada vez que o host inicia a sala.** Quick tunnels são pensados para testes e não têm garantia de disponibilidade.
+  Para um endereço fixo, use um túnel nomeado da Cloudflare (precisa de conta e domínio; veja abaixo).
 - **Arquivos:** até 90 MB cada (o plano grátis da Cloudflare corta uploads perto de 100 MB).
 - **Windows avisa "app desconhecido"** na primeira instalação, porque o instalador não é assinado.
   Clique em *Mais informações → Executar assim mesmo*. As atualizações seguintes não pedem isso de novo.
@@ -63,6 +63,17 @@ Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo 
   envia o vídeo para cada pessoa). Em redes muito restritivas (CGNAT/NAT simétrico) a conexão direta pode falhar; nesse caso
   o host pode configurar um servidor TURN (veja abaixo).
 - Pensado para **grupos pequenos de amigos de confiança**. Quem tem o convite entra; o dono da sala pode remover membros.
+
+### Endereço fixo (opcional)
+
+Na tela **Hospedar uma sala**, abra **Endereço fixo (avançado)**:
+
+1. No Cloudflare Zero Trust, crie um túnel (Networks → Tunnels → Create tunnel → Cloudflared) e copie o **token**.
+2. Em *Public hostname*, aponte o seu endereço (ex.: `chat.seudominio.com`) para `HTTP` + `localhost:47800`.
+3. Cole o endereço e o token no Concordo. Eles ficam salvos só no seu computador (o token é criptografado pelo sistema).
+
+Com isso o convite nunca muda: quem já entrou reconecta sozinho quando você abre a sala, sem código novo.
+Se a porta 47800 estiver ocupada, troque no próprio campo (e no painel da Cloudflare).
 
 ### Servidor TURN (opcional)
 
@@ -118,5 +129,5 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 ## Roadmap
 
 1. ~~Voz, vídeo e compartilhamento de tela~~ (feito na v0.2). Ideias seguintes: escolher microfone/saída de som, SFU opcional para salas maiores.
-2. Código de convite que não precisa ser reenviado (endereço fixo via *named tunnel*).
+2. ~~Endereço fixo via *named tunnel*~~ (feito na v0.2.1).
 3. Migração de host: outro membro assume a sala quando o host sai.

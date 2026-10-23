@@ -285,3 +285,7 @@ textarea.input { resize: vertical; min-height: 84px; }
 .source img { width: 100%; border-radius: 4px; background: #000; }
 .source span { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .check { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; }
+
+.fixed-box { margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.fixed-box summary { cursor: pointer; font-weight: 600; }
+.fixed-box .steps { padding-left: 18px; margin: 6px 0; }

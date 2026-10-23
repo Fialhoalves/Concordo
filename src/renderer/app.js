@@ -320,6 +320,41 @@
     const msg = h('div', { class: 'hint' }, 'Seu computador vira o servidor. Deixe o Concordo aberto enquanto a galera estiver conversando.');
     const go = h('button', { class: 'btn primary' }, 'Iniciar sala');
 
+    // endereço fixo (opcional): túnel nomeado da Cloudflare
+    const fxHost = h('input', { class: 'input', placeholder: 'chat.seudominio.com', 'data-role': 'fixed-host' });
+    const fxToken = h('input', { class: 'input', type: 'password', placeholder: 'Token do túnel (eyJ…)', 'data-role': 'fixed-token' });
+    const fxPort = h('input', { class: 'input', placeholder: '47800', 'data-role': 'fixed-port' });
+    const fxState = h('div', { class: 'hint' });
+    const fxClear = h('button', { class: 'btn small ghost', hidden: true }, 'Voltar ao endereço temporário');
+    const fixedBox = h('details', { class: 'fixed-box' },
+      h('summary', null, 'Endereço fixo (avançado)'),
+      h('p', { class: 'hint' }, 'Sem isso, o endereço da sala muda toda vez que você reinicia. Com um túnel nomeado da Cloudflare (precisa de um domínio no Cloudflare), o convite passa a valer sempre e seus amigos reconectam sozinhos.'),
+      h('ol', { class: 'hint steps' },
+        h('li', null, 'No painel Cloudflare Zero Trust: Networks → Tunnels → Create tunnel (Cloudflared).'),
+        h('li', null, 'Copie o token que aparece no comando de instalação (o texto grande depois de --token).'),
+        h('li', null, 'Em Public hostname, use seu endereço e aponte para HTTP, URL localhost:47800 (ou a porta abaixo).')),
+      h('div', { class: 'field' }, h('label', null, 'Endereço'), fxHost),
+      h('div', { class: 'field' }, h('label', null, 'Token'), fxToken),
+      h('div', { class: 'field' }, h('label', null, 'Porta local'), fxPort),
+      fxState, fxClear);
+    if (bridge.getFixedAddress) {
+      bridge.getFixedAddress().then((cfg) => {
+        if (!cfg) return;
+        fxHost.value = cfg.hostname;
+        fxPort.value = String(cfg.port);
+        fxToken.placeholder = 'Token salvo (deixe em branco para manter)';
+        fxState.textContent = 'Endereço fixo ativo: https://' + cfg.hostname;
+        fxClear.hidden = false;
+        fixedBox.open = true;
+      }).catch(() => {});
+    }
+    fxClear.addEventListener('click', async () => {
+      await bridge.clearFixedAddress();
+      fxHost.value = fxToken.value = fxPort.value = '';
+      fxClear.hidden = true;
+      fxState.textContent = 'Voltou ao endereço temporário.';
+    });
+
     go.addEventListener('click', async () => {
       const nickname = cleanNick(nick.value);
       const roomName = room.value.trim() || 'Concordo';
@@ -334,6 +369,9 @@
       msg.className = 'hint';
       msg.textContent = 'Iniciando…';
       try {
+        if (bridge.setFixedAddress && (fxHost.value.trim() || fxToken.value.trim())) {
+          await bridge.setFixedAddress({ hostname: fxHost.value, token: fxToken.value, port: fxPort.value });
+        }
         enterHost(await bridge.hostStart({ roomName, nickname }));
       } catch (e) {
         go.disabled = false;
@@ -348,6 +386,7 @@
           h('h2', null, 'Hospedar uma sala'),
           h('div', { class: 'field' }, h('label', null, 'Seu apelido'), nick),
           h('div', { class: 'field' }, h('label', null, 'Nome da sala'), room),
+          fixedBox,
           msg,
           h('div', { class: 'row between', style: { marginTop: '16px' } },
             h('button', { class: 'btn ghost', onclick: showWelcome }, 'Voltar'),

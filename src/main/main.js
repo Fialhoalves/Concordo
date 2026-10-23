@@ -1,5 +1,6 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, shell, Menu, session, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, desktopCapturer, safeStorage } = require('electron');
+const fs = require('node:fs');
 const path = require('node:path');
 const { createConcordoServer } = require('../server');
 const tunnel = require('./tunnel');
@@ -43,6 +44,48 @@ function deliverDeepLink(link) {
     pendingDeepLink = link;
   }
 }
+
+// ---------- endereço fixo (túnel nomeado da Cloudflare) ----------
+const DEFAULT_FIXED_PORT = 47800;
+const fixedConfigPath = () => path.join(app.getPath('userData'), 'tunnel-config.json');
+
+function readFixedConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(fixedConfigPath(), 'utf8'));
+    const url = tunnel.normalizeHostname(raw.hostname);
+    if (!url || !raw.token) return null;
+    const token = raw.enc ? safeStorage.decryptString(Buffer.from(raw.token, 'base64')) : raw.token;
+    const port = Number.isInteger(raw.port) && raw.port > 1023 && raw.port < 65536 ? raw.port : DEFAULT_FIXED_PORT;
+    return { url, token, port };
+  } catch {
+    return null;
+  }
+}
+
+ipcMain.handle('tunnel:get-fixed', () => {
+  const c = readFixedConfig();
+  return c ? { hostname: c.url.replace('https://', ''), port: c.port } : null;
+});
+
+ipcMain.handle('tunnel:set-fixed', (_event, cfg = {}) => {
+  const url = tunnel.normalizeHostname(cfg.hostname);
+  if (!url) throw new Error('Endereço inválido. Use algo como chat.seudominio.com');
+  const token = String(cfg.token || '').trim();
+  const old = readFixedConfig();
+  const finalToken = token || (old && old.url === url ? old.token : '');
+  if (!/^[A-Za-z0-9+/=_-]{40,}$/.test(finalToken)) throw new Error('Token inválido. Cole o token inteiro do túnel (começa com "eyJ").');
+  const port = parseInt(cfg.port, 10) || DEFAULT_FIXED_PORT;
+  if (port < 1024 || port > 65535) throw new Error('Porta inválida (use entre 1024 e 65535).');
+  const enc = safeStorage.isEncryptionAvailable();
+  const stored = enc ? safeStorage.encryptString(finalToken).toString('base64') : finalToken;
+  fs.writeFileSync(fixedConfigPath(), JSON.stringify({ hostname: url, token: stored, enc, port }), { mode: 0o600 });
+  return { hostname: url.replace('https://', ''), port };
+});
+
+ipcMain.handle('tunnel:clear-fixed', () => {
+  fs.rmSync(fixedConfigPath(), { force: true });
+  return true;
+});
 
 // ---------- voz, vídeo e tela ----------
 // Servidores STUN/TURN próprios: CONCORDO_ICE_SERVERS='[{"urls":"turn:host:3478","username":"u","credential":"p"}]'
@@ -179,6 +222,7 @@ async function openTunnel() {
     const t = await tunnel.startTunnel({
       binPath: bin,
       port: current.server.port,
+      named: readFixedConfig() ? { token: readFixedConfig().token, url: readFixedConfig().url } : undefined,
       onExit: (code) => {
         if (host === current && current.tunnel) {
           current.tunnel = null;
@@ -212,14 +256,24 @@ async function stopHost() {
 
 ipcMain.handle('host:start', async (_event, opts = {}) => {
   if (!host) {
-    const server = await createConcordoServer({
+    const fixed = readFixedConfig();
+    let server;
+    try {
+      server = await createConcordoServer({
+      port: fixed ? fixed.port : 0,
       dataDir: path.join(app.getPath('userData'), 'host-data'),
       roomName: opts.roomName,
       ownerName: opts.nickname || 'Anfitrião',
       getPublicUrl: () => (host ? host.publicUrl : null),
       version: app.getVersion(),
       iceServers: iceFromEnv(),
-    });
+      });
+    } catch (e) {
+      if (e && e.code === 'EADDRINUSE') {
+        throw new Error(`A porta ${fixed ? fixed.port : ''} já está em uso. Feche o outro Concordo ou troque a porta do endereço fixo.`);
+      }
+      throw e;
+    }
     host = {
       server,
       owner: server.owner,

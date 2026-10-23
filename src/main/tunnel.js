@@ -73,14 +73,32 @@ async function download(destFile) {
   return destFile;
 }
 
+const READY_RE = /registered tunnel connection|connection [0-9a-f-]+ registered/i;
+
+// Endereço fixo digitado pelo usuário -> "https://host" ou null.
+function normalizeHostname(raw) {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+  try {
+    const u = new URL(v);
+    if (!u.hostname.includes('.') || /[^a-z0-9.-]/i.test(u.hostname)) return null;
+    return 'https://' + u.hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 // Sobe o túnel apontando para a porta local. Resolve com { url, stop } quando a URL pública aparece.
-function startTunnel({ binPath, port, timeoutMs = 45000, onExit }) {
+// Com `named: { token, url }` usa um túnel nomeado da Cloudflare (endereço fixo): o token vai por
+// variável de ambiente (não aparece na lista de processos) e a URL é a configurada no painel da Cloudflare.
+function startTunnel({ binPath, port, timeoutMs = 45000, onExit, named }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      binPath,
-      ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`],
-      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-    );
+    const args = named
+      ? ['tunnel', '--no-autoupdate', 'run']
+      : ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`];
+    const env = named ? { ...process.env, TUNNEL_TOKEN: named.token } : process.env;
+    const child = spawn(binPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env });
 
     let settled = false;
     let tail = '';
@@ -104,7 +122,7 @@ function startTunnel({ binPath, port, timeoutMs = 45000, onExit }) {
     const onData = (buf) => {
       const text = buf.toString();
       tail = (tail + text).slice(-2000);
-      const m = text.match(URL_RE);
+      const m = named ? (READY_RE.test(tail) ? [named.url] : null) : text.match(URL_RE);
       if (m) {
         finish(null, {
           url: m[0],
@@ -126,4 +144,4 @@ function startTunnel({ binPath, port, timeoutMs = 45000, onExit }) {
   });
 }
 
-module.exports = { binaryName, downloadUrl, findBinary, download, startTunnel, URL_RE };
+module.exports = { normalizeHostname, binaryName, downloadUrl, findBinary, download, startTunnel, URL_RE };

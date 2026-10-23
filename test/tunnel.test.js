@@ -100,3 +100,44 @@ test('findBinary prioriza a variável de ambiente e depois a pasta de recursos',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('normalizeHostname aceita domínio, com ou sem https, e rejeita lixo', () => {
+  assert.equal(tunnel.normalizeHostname('Chat.Exemplo.com'), 'https://chat.exemplo.com');
+  assert.equal(tunnel.normalizeHostname('https://chat.exemplo.com/caminho?x=1'), 'https://chat.exemplo.com');
+  assert.equal(tunnel.normalizeHostname(''), null);
+  assert.equal(tunnel.normalizeHostname('localhost'), null);
+  assert.equal(tunnel.normalizeHostname('a b.com'), null);
+});
+
+test('túnel nomeado: token vai por variável de ambiente e a URL é a configurada', { skip }, async () => {
+  const { file, dir } = fakeBinary(
+    'echo "args=$@ token=$TUNNEL_TOKEN" > "$(dirname "$0")/seen.txt"\necho "INF Registered tunnel connection connIndex=0" >&2\nsleep 30',
+  );
+  try {
+    const t = await tunnel.startTunnel({
+      binPath: file,
+      port: 1,
+      timeoutMs: 5000,
+      named: { token: 'segredo-123', url: 'https://chat.exemplo.com' },
+    });
+    assert.equal(t.url, 'https://chat.exemplo.com');
+    const seen = fs.readFileSync(path.join(dir, 'seen.txt'), 'utf8');
+    assert.match(seen, /args=tunnel --no-autoupdate run token=segredo-123/);
+    assert.ok(!seen.includes('--token'), 'o token não pode ir na linha de comando');
+    t.stop();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('túnel nomeado: erro do cloudflared vira rejeição', { skip }, async () => {
+  const { file, dir } = fakeBinary('echo "ERR token inválido" >&2\nexit 1');
+  try {
+    await assert.rejects(
+      tunnel.startTunnel({ binPath: file, port: 1, timeoutMs: 3000, named: { token: 'x', url: 'https://a.b.com' } }),
+      /fechou/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
