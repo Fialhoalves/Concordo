@@ -12,6 +12,11 @@ const Invite = require('../shared/invite');
 
 const OPEN = 1;
 const MAX_MESSAGE_LENGTH = 4000;
+const MAX_VOICE = 8; // chamadas em malha: cada pessoa envia para todas as outras
+const DEFAULT_ICE = [
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.l.google.com:19302' },
+];
 const SAFE_IMAGE_TYPES = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -83,6 +88,7 @@ async function createConcordoServer(opts = {}) {
     ownerName,
     getPublicUrl = () => null,
     maxUploadBytes = 90 * 1024 * 1024, // o plano grátis do Cloudflare corta em ~100 MB
+    iceServers = DEFAULT_ICE, // STUN/TURN que os clientes usam nas chamadas
     version = '0.0.0',
   } = opts;
   if (!dataDir) throw new Error('dataDir é obrigatório');
@@ -100,6 +106,31 @@ async function createConcordoServer(opts = {}) {
     for (const set of clients.values()) {
       for (const ws of set) if (ws.readyState === OPEN) ws.send(data);
     }
+  }
+
+  // ---- voz: quem está em qual sala de voz (só em memória) ----
+  const voice = new Map(); // userId -> { ws, channel, muted, deafened, cam, screen }
+
+  function voiceSnapshot() {
+    const rooms = {};
+    for (const [id, v] of voice) {
+      (rooms[v.channel] = rooms[v.channel] || []).push({
+        id,
+        muted: v.muted,
+        deafened: v.deafened,
+        cam: v.cam,
+        screen: v.screen,
+      });
+    }
+    return rooms;
+  }
+
+  const broadcastVoice = () => broadcast({ t: 'voice', rooms: voiceSnapshot() });
+
+  function leaveVoice(userId) {
+    if (!voice.delete(userId)) return false;
+    broadcastVoice();
+    return true;
   }
 
   function makeCode(inviteToken) {
@@ -146,7 +177,7 @@ async function createConcordoServer(opts = {}) {
   }
 
   async function handleUpload(req, res, user, channelId, url) {
-    if (!store.hasChannel(channelId)) throw httpError(404, 'canal não encontrado');
+    if (!store.hasChannel(channelId, 'text')) throw httpError(404, 'canal não encontrado');
     const name = cleanFileName(url.searchParams.get('name'));
     const len = Number(req.headers['content-length']);
     if (!Number.isFinite(len) || len <= 0) throw httpError(411, 'tamanho do arquivo não informado');
@@ -261,13 +292,15 @@ async function createConcordoServer(opts = {}) {
         channels: store.channels,
         users: store.users().map(pub),
         online: online(),
-        limits: { maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH },
+        limits: { maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH, maxVoice: MAX_VOICE },
+        voice: voiceSnapshot(),
+        ice: iceServers,
       });
     }
 
     let m = p.match(/^\/api\/channels\/([a-z0-9_-]+)\/messages$/);
     if (method === 'GET' && m) {
-      if (!store.hasChannel(m[1])) throw httpError(404, 'canal não encontrado');
+      if (!store.hasChannel(m[1], 'text')) throw httpError(404, 'canal não encontrado');
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit'), 10) || 50));
       const before = url.searchParams.get('before') || undefined;
       return sendJson(res, 200, store.getMessages(m[1], { before, limit }));
@@ -281,7 +314,7 @@ async function createConcordoServer(opts = {}) {
       const body = await readJson(req);
       let channel;
       try {
-        channel = store.addChannel(body.name);
+        channel = store.addChannel(body.name, body.type === 'voice' ? 'voice' : 'text');
       } catch (e) {
         throw httpError(400, e.message);
       }
@@ -318,9 +351,11 @@ async function createConcordoServer(opts = {}) {
       if (!target) throw httpError(404, 'usuário não encontrado');
       if (target.id === user.id) throw httpError(400, 'você não pode remover a si mesmo');
       store.removeUser(target.id);
+      voice.delete(target.id);
       for (const ws of clients.get(target.id) || []) ws.close(4001, 'removido');
       clients.delete(target.id);
       broadcast({ t: 'user_removed', id: target.id });
+      broadcastVoice();
       broadcast({ t: 'presence', online: online() });
       return sendJson(res, 200, { ok: true });
     }
@@ -362,6 +397,7 @@ async function createConcordoServer(opts = {}) {
     });
 
     ws.send(JSON.stringify({ t: 'presence', online: online() }));
+    ws.send(JSON.stringify({ t: 'voice', rooms: voiceSnapshot() }));
     if (wasOffline) broadcast({ t: 'presence', online: online() });
 
     ws.on('message', (raw) => {
@@ -375,9 +411,58 @@ async function createConcordoServer(opts = {}) {
 
       if (data.t === 'ping') return ws.send(JSON.stringify({ t: 'pong' }));
 
+      const fail = (message) => ws.send(JSON.stringify({ t: 'error', message }));
+
+      if (data.t === 'voice_join') {
+        if (!store.hasChannel(data.channel, 'voice')) return fail('canal de voz inválido');
+        if (!store.getUser(user.id)) return;
+        const others = [...voice.entries()]
+          .filter(([id, v]) => v.channel === data.channel && id !== user.id)
+          .map(([id]) => id);
+        const previous = voice.get(user.id);
+        const alreadyHere = previous && previous.channel === data.channel;
+        if (!alreadyHere && others.length >= MAX_VOICE) {
+          return fail(`sala de voz cheia (máximo ${MAX_VOICE} pessoas)`);
+        }
+        if (previous && previous.ws !== ws && previous.ws.readyState === OPEN) {
+          previous.ws.send(JSON.stringify({ t: 'voice_left' })); // entrou por outra janela
+        }
+        voice.set(user.id, { ws, channel: data.channel, muted: false, deafened: false, cam: null, screen: null });
+        ws.send(JSON.stringify({ t: 'voice_joined', channel: data.channel, peers: others }));
+        return broadcastVoice();
+      }
+
+      if (data.t === 'voice_leave') {
+        const v = voice.get(user.id);
+        if (v && v.ws === ws) leaveVoice(user.id);
+        return;
+      }
+
+      if (data.t === 'voice_state') {
+        const v = voice.get(user.id);
+        if (!v || v.ws !== ws) return;
+        const id = (x) => (typeof x === 'string' && x.length > 0 && x.length <= 80 ? x : null);
+        v.muted = data.muted === true;
+        v.deafened = data.deafened === true;
+        v.cam = id(data.cam);
+        v.screen = id(data.screen);
+        return broadcastVoice();
+      }
+
+      if (data.t === 'rtc') {
+        const me = voice.get(user.id);
+        const target = voice.get(String(data.to));
+        if (!me || me.ws !== ws || !target || target.channel !== me.channel) return;
+        if (!data.data || typeof data.data !== 'object') return;
+        if (target.ws.readyState === OPEN) {
+          target.ws.send(JSON.stringify({ t: 'rtc', from: user.id, data: data.data }));
+        }
+        return;
+      }
+
       if (data.t === 'msg') {
         const text = typeof data.text === 'string' ? data.text.trim() : '';
-        if (!text || text.length > MAX_MESSAGE_LENGTH || !store.hasChannel(data.channel)) {
+        if (!text || text.length > MAX_MESSAGE_LENGTH || !store.hasChannel(data.channel, 'text')) {
           return ws.send(JSON.stringify({ t: 'error', message: 'mensagem inválida' }));
         }
         if (!store.getUser(user.id)) return; // removido enquanto conectado
@@ -390,6 +475,8 @@ async function createConcordoServer(opts = {}) {
     });
 
     ws.on('close', () => {
+      const v = voice.get(user.id);
+      if (v && v.ws === ws) leaveVoice(user.id);
       const current = clients.get(user.id);
       if (!current) return;
       current.delete(ws);
@@ -425,6 +512,7 @@ async function createConcordoServer(opts = {}) {
     clearInterval(heartbeat);
     for (const set of clients.values()) for (const ws of set) ws.terminate();
     clients.clear();
+    voice.clear();
     wss.close();
     if (server.closeAllConnections) server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

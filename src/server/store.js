@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const rid = (bytes = 8) => crypto.randomBytes(bytes).toString('hex');
 
 const MAX_CHANNELS = 30;
+const CHANNEL_TYPES = ['text', 'voice'];
 
 function slugChannel(raw) {
   return String(raw ?? '')
@@ -37,8 +38,9 @@ class Store {
     this.tokenIndex = new Map();
     for (const u of Object.values(this.state.users)) this.tokenIndex.set(u.token, u.id);
 
+    this._normalizeChannels();
     this.messages = new Map();
-    for (const ch of this.state.channels) this.messages.set(ch.id, []);
+    for (const ch of this.state.channels) if (ch.type === 'text') this.messages.set(ch.id, []);
     this._loadMessages();
 
     this._timer = null;
@@ -50,7 +52,10 @@ class Store {
       room: { id: rid(6), name: 'Concordo' },
       users: {},
       invites: {},
-      channels: [{ id: 'geral', name: 'geral' }],
+      channels: [
+        { id: 'geral', name: 'geral', type: 'text' },
+        { id: 'voz', name: 'voz', type: 'voice' },
+      ],
       files: {},
     };
     try {
@@ -58,6 +63,17 @@ class Store {
       return { ...defaults, ...raw, room: { ...defaults.room, ...raw.room } };
     } catch {
       return defaults;
+    }
+  }
+
+  // Salas criadas na v0.1 não tinham tipo de canal nem canal de voz.
+  _normalizeChannels() {
+    const channels = this.state.channels;
+    for (const ch of channels) if (!CHANNEL_TYPES.includes(ch.type)) ch.type = 'text';
+    if (!channels.some((c) => c.type === 'voice')) {
+      let id = 'voz';
+      for (let i = 2; channels.some((c) => c.id === id); i++) id = `voz-${i}`;
+      channels.push({ id, name: id, type: 'voice' });
     }
   }
 
@@ -206,18 +222,20 @@ class Store {
     return this.state.channels;
   }
 
-  hasChannel(id) {
-    return this.state.channels.some((c) => c.id === id);
+  // type é opcional: sem ele, basta o canal existir.
+  hasChannel(id, type) {
+    return this.state.channels.some((c) => c.id === id && (!type || c.type === type));
   }
 
-  addChannel(rawName) {
+  addChannel(rawName, type = 'text') {
+    if (!CHANNEL_TYPES.includes(type)) throw new Error('tipo de canal inválido');
     const name = slugChannel(rawName);
     if (!name) throw new Error('nome de canal inválido');
     if (this.hasChannel(name)) throw new Error('já existe um canal com esse nome');
     if (this.state.channels.length >= MAX_CHANNELS) throw new Error('limite de canais atingido');
-    const ch = { id: name, name };
+    const ch = { id: name, name, type };
     this.state.channels.push(ch);
-    this.messages.set(ch.id, []);
+    if (type === 'text') this.messages.set(ch.id, []);
     this.save();
     return ch;
   }
