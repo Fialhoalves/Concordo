@@ -1,6 +1,6 @@
 {
   "name": "concordo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bate-papo entre amigos que roda no seu PC. Sem servidor de terceiros.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -50,7 +50,8 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Concordo-Setup-${version}.${ext}"
     },
     "publish": [
       {

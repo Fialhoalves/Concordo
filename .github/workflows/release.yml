@@ -1,6 +1,6 @@
 name: Release
 
-# Publica uma nova versão do Concordo sempre que você envia uma tag "v*" (ex.: v0.1.0).
+# Publica uma nova versão do Concordo sempre que você envia uma tag "v*" (ex.: v0.1.1).
 on:
   push:
     tags:
@@ -34,7 +34,21 @@ jobs:
           curl -fL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o build/bin/cloudflared.exe
           ls -l build/bin
 
-      - name: Gerar instalador e publicar a Release
-        run: npx electron-builder --win --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Gera o instalador, o .blockmap e o latest.yml (lido pela atualização automática).
+      - name: Gerar o instalador
+        run: npx electron-builder --win --publish never
+
+      - name: Conferir os arquivos gerados
+        shell: bash
+        run: ls -l dist
+
+      # O envio para a Release é feito por uma action própria, que falha se algum arquivo faltar.
+      - name: Publicar a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Concordo-Setup-*.exe
+            dist/Concordo-Setup-*.exe.blockmap
+            dist/latest.yml
+          fail_on_unmatched_files: true
+          generate_release_notes: true
