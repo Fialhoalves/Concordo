@@ -1309,6 +1309,7 @@
       if (stream) video.play().catch(() => {});
     }
     video.hidden = !stream;
+    if (stream && video.paused) video.play().catch(() => {});
     const av = tile.querySelector('.tile-avatar');
     av.hidden = !!stream;
     if (!stream && !av.firstChild) av.append(avatar(id, nameOf(id), { big: true }));
@@ -1487,6 +1488,35 @@
     }
   });
 
+  // Campos de qualidade da transmissão (usados no seletor de tela e nas configurações).
+  function qualityFields(kind) {
+    const prefs = vprefs();
+    const isScreen = kind === 'screen';
+    const pfx = isScreen ? 'screen' : 'cam';
+    const mk = (role, label, options, current) => {
+      const sel = h('select', { class: 'input', 'data-role': role },
+        ...options.map(([value, text]) => h('option', { value: String(value) }, text)));
+      sel.value = String(current);
+      sel.addEventListener('change', () => {
+        const p = vprefs();
+        p[pfx + role.replace(pfx + '-', '').replace(/^./, (c) => c.toUpperCase())] = isNaN(Number(sel.value)) ? sel.value : Number(sel.value);
+        saveVprefs(p);
+        if (S.voice.client) S.voice.client.applyQuality();
+      });
+      return h('div', { class: 'field' }, h('label', null, label), sel);
+    };
+    const resOptions = isScreen
+      ? [['720', '720p'], ['1080', '1080p'], ['1440', '1440p'], ['source', 'Original da tela']]
+      : [['360', '360p'], ['720', '720p'], ['1080', '1080p']];
+    const fpsOptions = isScreen ? [[15, '15 fps (texto e slides)'], [30, '30 fps'], [60, '60 fps (jogos)']] : [[15, '15 fps'], [30, '30 fps']];
+    const kbpsOptions = [[0, 'Automática (divide entre os espectadores)'], [500, '0,5 Mbps'], [1000, '1 Mbps'], [2000, '2 Mbps'], [4000, '4 Mbps'], [6000, '6 Mbps'], [8000, '8 Mbps']];
+    return [
+      mk(pfx + '-res', 'Resolução', resOptions, prefs[pfx + 'Res'] || (isScreen ? '1080' : '720')),
+      mk(pfx + '-fps', 'Taxa de quadros', fpsOptions, prefs[pfx + 'Fps'] || 30),
+      mk(pfx + '-kbps', 'Taxa de dados máxima por espectador', kbpsOptions, prefs[pfx + 'Kbps'] || 0),
+    ];
+  }
+
   async function openVoiceSettings() {
     let devices = [];
     try {
@@ -1539,6 +1569,11 @@
       check('echo', 'Cancelamento de eco', 'opt-echo'),
       check('noise', 'Supressão de ruído', 'opt-noise'),
       check('agc', 'Ajuste automático de volume do microfone', 'opt-agc'),
+      h('h4', { class: 'sub' }, 'Câmera: qualidade'),
+      ...qualityFields('cam'),
+      h('h4', { class: 'sub' }, 'Compartilhamento de tela: qualidade'),
+      ...qualityFields('screen'),
+      h('p', { class: 'hint' }, 'Mais resolução, quadros e dados pedem mais da sua internet de envio, que é dividida entre todos que assistem. Na dúvida, deixe a taxa em Automática.'),
       h('div', { class: 'row' },
         h('button', { class: 'btn small', 'data-act': 'diag', onclick: async () => {
           const c = S.voice.client;
@@ -1571,6 +1606,7 @@
     };
     close = modal([
       h('h3', null, 'Compartilhar tela'),
+      h('div', { class: 'row quality-row' }, ...qualityFields('screen').slice(0, 2)),
       h('div', { class: 'source-grid' },
         ...sources.map((src) =>
           h('button', { class: 'source', 'data-source': src.id, onclick: pick(src) },

@@ -32,8 +32,11 @@ lista de membros com presença, notificações, atualização automática pelo G
    volume da transmissão de tela e *Silenciar para mim*. Os ajustes ficam salvos por pessoa neste computador.
 5. O botão ⚙ ao lado do seu nome escolhe microfone, saída de som e câmera (a troca vale na hora, mesmo na chamada) e liga ou
    desliga cancelamento de eco, supressão de ruído e ajuste automático de volume.
-6. Atalhos com a chamada aberta: **Ctrl+Shift+M** silencia o microfone e **Ctrl+Shift+D** ensurdece (valem com o app em foco).
-7. Ao compartilhar a tela, escolha a tela ou janela. O som do computador é opcional e desligado por padrão: ele inclui a
+6. Em ⚙ há também a **qualidade da transmissão**, separada para câmera e tela: resolução (até 1440p ou a original da tela),
+   taxa de quadros (15, 30 ou 60 fps) e taxa de dados máxima por espectador. Em *Automática*, o upload é dividido entre quem
+   está assistindo. A mudança vale na hora, mesmo durante a transmissão; 15 fps é bom para texto e slides, 60 fps para jogos.
+7. Atalhos com a chamada aberta: **Ctrl+Shift+M** silencia o microfone e **Ctrl+Shift+D** ensurdece (valem com o app em foco).
+8. Ao compartilhar a tela, escolha a tela ou janela. O som do computador é opcional e desligado por padrão: ele inclui a
    voz dos amigos, que ouviriam eco. Use fones se ligar.
 
 Os dados da sala (usuários, mensagens e arquivos) ficam na pasta do aplicativo no computador do host.

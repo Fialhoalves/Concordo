@@ -395,7 +395,7 @@ async function createConcordoServer(opts = {}) {
   server.requestTimeout = 30 * 60 * 1000; // uploads grandes em conexões lentas
 
   // ---- WebSocket ----
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url, 'http://localhost');

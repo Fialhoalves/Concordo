@@ -37,6 +37,10 @@
   function createVoiceClient({ myId, send, getIce, getState, onChange, onLocalState, getPrefs }) {
     const prefsNow = () => (getPrefs && getPrefs()) || {};
     const local = {
+      // Ids de stream (msid) estáveis durante toda a chamada: ligar e desligar câmera/tela reaproveita
+      // o mesmo canal de envio (replaceTrack) em vez de criar uma nova seção SDP a cada vez.
+      camMsid: new MediaStream(),
+      screenMsid: new MediaStream(),
       channel: null,
       mic: null,
       cam: null,
@@ -59,8 +63,8 @@
       onLocalState({
         muted: local.muted,
         deafened: local.deafened,
-        cam: local.cam ? local.cam.id : null,
-        screen: local.screen ? local.screen.id : null,
+        cam: local.cam ? local.camMsid.id : null,
+        screen: local.screen ? local.screenMsid.id : null,
       });
 
     function host() {
@@ -242,27 +246,91 @@
       applySink();
     }
 
+    // Cada tipo de mídia tem um "slot" fixo por par. Desligar = replaceTrack(null); ligar de novo =
+    // replaceTrack(nova faixa). Assim a negociação (SDP) não cresce a cada liga/desliga.
+    function attachTrack(peer, kind, track, stream) {
+      const key = kind + ':' + track.kind;
+      const slot = peer.slots.get(key);
+      if (slot) {
+        slot.sender.replaceTrack(track).then(() => tuneSenders(peer)).catch(() => {});
+        return;
+      }
+      peer.slots.set(key, { kind, sender: peer.pc.addTrack(track, stream) });
+    }
+
     function addTracksToPeer(peer, kind, stream) {
-      for (const track of stream.getTracks()) {
-        if (kind === 'screen' && track.kind === 'video') track.contentHint = 'motion';
-        peer.senders.push({ kind, sender: peer.pc.addTrack(track, stream) });
+      const msid = kind === 'cam' ? local.camMsid : kind === 'screen' ? local.screenMsid : stream;
+      for (const track of stream.getTracks()) attachTrack(peer, kind, track, msid);
+    }
+
+    function removeTracks(kind) {
+      for (const peer of peers.values()) {
+        for (const slot of peer.slots.values()) {
+          if (slot.kind === kind) slot.sender.replaceTrack(null).catch(() => {});
+        }
       }
     }
 
+    // ---------- qualidade da transmissão ----------
+    const RES_H = { 360: 360, 480: 480, 720: 720, 1080: 1080, 1440: 1440 };
+    function quality(kind) {
+      const p = prefsNow();
+      const isScreen = kind === 'screen';
+      const res = String(isScreen ? p.screenRes || '1080' : p.camRes || '720');
+      return {
+        height: res === 'source' ? 0 : RES_H[res] || 720,
+        fps: Number(isScreen ? p.screenFps || 30 : p.camFps || 30),
+        kbps: Number(isScreen ? p.screenKbps || 0 : p.camKbps || 0),
+      };
+    }
+
+    function videoConstraints(kind) {
+      const q = quality(kind);
+      const out = { frameRate: kind === 'screen' ? { ideal: q.fps, max: q.fps } : { ideal: q.fps } };
+      if (q.height) {
+        const w = Math.round((q.height * 16) / 9);
+        if (kind === 'screen') {
+          out.width = { max: w };
+          out.height = { max: q.height };
+        } else {
+          out.width = { ideal: w };
+          out.height = { ideal: q.height };
+        }
+      }
+      return out;
+    }
+
     function tuneSenders(peer) {
-      for (const { kind, sender } of peer.senders) {
+      for (const { kind, sender } of peer.slots.values()) {
         if (!UPLOAD_BUDGET[kind] || !sender.track || sender.track.kind !== 'video') continue;
-        const want = targetBitrate(kind, peers.size);
+        const q = quality(kind);
+        const want = q.kbps ? q.kbps * 1000 : targetBitrate(kind, peers.size);
+        const height = (sender.track.getSettings && sender.track.getSettings().height) || 0;
+        const scale = q.height && height > q.height ? Math.round((height / q.height) * 100) / 100 : 1;
         try {
           const p = sender.getParameters();
           if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-          if (p.encodings[0].maxBitrate === want) continue;
-          p.encodings[0].maxBitrate = want;
+          const e = p.encodings[0];
+          if (e.maxBitrate === want && e.maxFramerate === q.fps && (e.scaleResolutionDownBy || 1) === scale) continue;
+          e.maxBitrate = want;
+          e.maxFramerate = q.fps;
+          e.scaleResolutionDownBy = scale;
           sender.setParameters(p).catch(() => {});
         } catch {
           /* o navegador ainda não deixa ajustar */
         }
       }
+    }
+
+    // Aplica as preferências de qualidade a uma transmissão em andamento.
+    function applyQuality() {
+      for (const [kind, stream] of [['cam', local.cam], ['screen', local.screen]]) {
+        const track = stream && stream.getVideoTracks()[0];
+        if (!track) continue;
+        track.contentHint = kind === 'screen' ? (quality('screen').fps >= 30 ? 'motion' : 'detail') : '';
+        if (track.applyConstraints) track.applyConstraints(videoConstraints(kind)).catch(() => {});
+      }
+      tuneAll();
     }
 
     const tuneAll = () => peers.forEach(tuneSenders);
@@ -352,7 +420,7 @@
         makingOffer: false,
         ignoreOffer: false,
         queue: Promise.resolve(),
-        senders: [],
+        slots: new Map(),
         streams: new Map(),
         audio: new Map(),
         conn: 'connecting',
@@ -474,7 +542,7 @@
 
     async function openCam() {
       const p = prefsNow();
-      const base = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+      const base = videoConstraints('cam');
       if (p.cam) {
         try {
           return await navigator.mediaDevices.getUserMedia({ video: { ...base, deviceId: { exact: p.cam } } });
@@ -506,7 +574,8 @@
         for (const peer of peers.values()) addTracksToPeer(peer, 'mic', next);
       } else {
         for (const peer of peers.values()) {
-          for (const sn of peer.senders) if (sn.kind === 'mic') await sn.sender.replaceTrack(track).catch(() => {});
+          const slot = peer.slots.get('mic:audio');
+          if (slot) await slot.sender.replaceTrack(track).catch(() => {});
         }
       }
       changed();
@@ -527,12 +596,14 @@
       });
       track.onended = () => setCamera(false);
       for (const peer of peers.values()) {
-        for (const sn of peer.senders) if (sn.kind === 'cam') await sn.sender.replaceTrack(track).catch(() => {});
+        const slot = peer.slots.get('cam:video');
+        if (slot) await slot.sender.replaceTrack(track).catch(() => {});
       }
-      // mantém o mesmo id de stream (já anunciado aos outros) trocando só a faixa
+      tuneAll();
       const old = local.cam;
       for (const t of old.getTracks()) old.removeTrack(t);
       old.addTrack(track);
+      tuneAll();
       changed();
     }
 
@@ -629,20 +700,6 @@
       changed();
     }
 
-    function removeTracks(kind) {
-      for (const peer of peers.values()) {
-        peer.senders = peer.senders.filter((s) => {
-          if (s.kind !== kind) return true;
-          try {
-            peer.pc.removeTrack(s.sender);
-          } catch {
-            /* par já fechado */
-          }
-          return false;
-        });
-      }
-    }
-
     async function setCamera(on) {
       if (!local.channel) return;
       if (on && !local.cam) {
@@ -659,6 +716,7 @@
         local.cam = stream;
         stream.getVideoTracks()[0].onended = () => setCamera(false);
         for (const peer of peers.values()) addTracksToPeer(peer, 'cam', stream);
+        tuneAll();
       } else if (!on && local.cam) {
         local.cam.getTracks().forEach((t) => t.stop());
         removeTracks('cam');
@@ -673,7 +731,7 @@
       let stream;
       try {
         stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30 } },
+          video: videoConstraints('screen'),
           // pede ao Chromium que não capture o som do próprio Concordo (voz dos amigos); ignorado se não houver suporte
           audio: audio ? { suppressLocalAudioPlayback: true, restrictOwnAudio: true } : false,
         });
@@ -691,8 +749,10 @@
         return;
       }
       local.screen = stream;
+      stream.getVideoTracks()[0].contentHint = quality('screen').fps >= 30 ? 'motion' : 'detail';
       stream.getVideoTracks()[0].onended = () => stopScreen(); // botão "parar compartilhamento" do sistema
       for (const peer of peers.values()) addTracksToPeer(peer, 'screen', stream);
+      tuneAll();
       emitLocal();
       changed();
     }
@@ -715,6 +775,7 @@
       setOutputDevice,
       restartMic,
       restartCamera,
+      applyQuality,
       // usado nos testes: ganho e sinal de cada fonte de áudio recebida
       diagnostics,
       debugAudio() {
