@@ -1436,6 +1436,13 @@
       check('echo', 'Cancelamento de eco', 'opt-echo'),
       check('noise', 'Supressão de ruído', 'opt-noise'),
       check('agc', 'Ajuste automático de volume do microfone', 'opt-agc'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', 'data-act': 'diag', onclick: async () => {
+          const c = S.voice.client;
+          if (!c) return toast('Entre numa chamada para gerar o diagnóstico.', 'error');
+          await copyText(await c.diagnostics());
+          toast('Diagnóstico copiado. Cole numa conversa com o desenvolvedor.', 'ok');
+        } }, 'Copiar diagnóstico da chamada')),
       h('p', { class: 'hint' }, 'Atalhos durante a chamada: Ctrl+Shift+M silencia o microfone e Ctrl+Shift+D ensurdece. Clique com o botão direito no nome de alguém para ajustar o volume dele.'),
       h('div', { class: 'row end', style: { marginTop: '14px' } },
         h('button', { class: 'btn primary', onclick: () => close() }, 'Fechar')),
@@ -1454,6 +1461,9 @@
       await voiceAction(async () => {
         await bridge.screenPrepare({ id: src.id, audio: audio.checked });
         await v.client.startScreen({ audio: audio.checked });
+        if (audio.checked && v.client && v.client.state().screenNoAudio) {
+          toast('O Windows não entregou o som do computador. A tela foi compartilhada sem áudio.', 'error');
+        }
       });
     };
     close = modal([

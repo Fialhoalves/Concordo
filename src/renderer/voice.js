@@ -6,7 +6,13 @@
 (function (root) {
   'use strict';
 
-  const MAX_BITRATE = { cam: 1200000, screen: 3000000 }; // bits/s enviados a CADA pessoa
+  // Orçamento de upload de vídeo (bits/s) dividido entre as pessoas da chamada: em malha, cada
+  // pessoa recebe uma cópia, e estourar a internet de casa congela vídeo, tela e até a voz.
+  const UPLOAD_BUDGET = { cam: 1500000, screen: 3500000 };
+  const PER_PEER_MAX = { cam: 1200000, screen: 2500000 };
+  const PER_PEER_MIN = { cam: 250000, screen: 600000 };
+  const targetBitrate = (kind, peerCount) =>
+    Math.round(Math.max(PER_PEER_MIN[kind], Math.min(PER_PEER_MAX[kind], UPLOAD_BUDGET[kind] / Math.max(1, peerCount))));
   const SPEAKING_LEVEL = 0.02;
   const SPEAKING_HOLD_MS = 300;
 
@@ -245,15 +251,92 @@
 
     function tuneSenders(peer) {
       for (const { kind, sender } of peer.senders) {
-        if (!MAX_BITRATE[kind] || !sender.track || sender.track.kind !== 'video') continue;
+        if (!UPLOAD_BUDGET[kind] || !sender.track || sender.track.kind !== 'video') continue;
+        const want = targetBitrate(kind, peers.size);
         try {
           const p = sender.getParameters();
           if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-          if (p.encodings[0].maxBitrate === MAX_BITRATE[kind]) continue;
-          p.encodings[0].maxBitrate = MAX_BITRATE[kind];
+          if (p.encodings[0].maxBitrate === want) continue;
+          p.encodings[0].maxBitrate = want;
           sender.setParameters(p).catch(() => {});
         } catch {
           /* o navegador ainda não deixa ajustar */
+        }
+      }
+    }
+
+    const tuneAll = () => peers.forEach(tuneSenders);
+
+    // ---------- diagnóstico e vigia de travamento ----------
+    const eventLog = [];
+    function note(msg) {
+      eventLog.push(new Date().toLocaleTimeString('pt-BR') + ' ' + msg);
+      if (eventLog.length > 60) eventLog.shift();
+    }
+
+    async function diagnostics() {
+      const lines = ['Concordo — diagnóstico de chamada', 'canal: ' + (local.channel || '-'), 'pares: ' + peers.size];
+      for (const peer of peers.values()) {
+        lines.push('', '== par ' + peer.id + ' conexão=' + peer.pc.connectionState + ' ice=' + peer.pc.iceConnectionState);
+        try {
+          const rep = await peer.pc.getStats();
+          const byId = new Map();
+          rep.forEach((r) => byId.set(r.id, r));
+          rep.forEach((r) => {
+            if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+              const l = byId.get(r.localCandidateId) || {};
+              const rm = byId.get(r.remoteCandidateId) || {};
+              lines.push(`rota: ${l.candidateType}/${l.protocol} -> ${rm.candidateType}/${rm.protocol}, rtt=${Math.round((r.currentRoundTripTime || 0) * 1000)}ms, disp.saída=${Math.round((r.availableOutgoingBitrate || 0) / 1000)}kbps`);
+            }
+            if (r.type === 'outbound-rtp' && r.kind === 'video') {
+              lines.push(`envio vídeo: ${r.frameWidth || 0}x${r.frameHeight || 0} ${Math.round(r.framesPerSecond || 0)}fps, limitado por=${r.qualityLimitationReason || '-'}, perdas pedidas(nack)=${r.nackCount || 0}`);
+            }
+            if (r.type === 'inbound-rtp' && r.kind === 'video') {
+              lines.push(`recebe vídeo: ${r.frameWidth || 0}x${r.frameHeight || 0} ${Math.round(r.framesPerSecond || 0)}fps, bytes=${r.bytesReceived}, pacotes perdidos=${r.packetsLost}, congelamentos=${r.freezeCount || 0}`);
+            }
+            if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+              lines.push(`recebe áudio: bytes=${r.bytesReceived}, pacotes perdidos=${r.packetsLost}, jitter=${Math.round((r.jitter || 0) * 1000)}ms`);
+            }
+          });
+        } catch (e) {
+          lines.push('sem estatísticas: ' + e.message);
+        }
+      }
+      lines.push('', 'eventos recentes:', ...eventLog);
+      return lines.join('\n');
+    }
+
+    // Se o vídeo recebido para de avançar com a conexão "ok", reinicia o caminho de rede desse par.
+    const watch = new Map(); // id do par -> { bytes, stalls }
+    let watchTimer = null;
+    async function watchdog() {
+      for (const peer of peers.values()) {
+        if (peer.pc.connectionState !== 'connected') continue;
+        const { cam, screen } = classify(peer);
+        if (!cam && !screen) {
+          watch.delete(peer.id);
+          continue;
+        }
+        let bytes = 0;
+        try {
+          (await peer.pc.getStats()).forEach((r) => {
+            if (r.type === 'inbound-rtp' && r.kind === 'video') bytes += r.bytesReceived;
+          });
+        } catch {
+          continue;
+        }
+        const w = watch.get(peer.id) || { bytes: -1, stalls: 0 };
+        w.stalls = bytes === w.bytes ? w.stalls + 1 : 0;
+        w.bytes = bytes;
+        watch.set(peer.id, w);
+        if (w.stalls >= 3) {
+          w.stalls = 0;
+          note('vídeo parado de ' + peer.id + ': reiniciando a rota');
+          try {
+            peer.pc.restartIce();
+          } catch {
+            /* par fechando */
+          }
         }
       }
     }
@@ -311,10 +394,15 @@
       pc.onconnectionstatechange = () => {
         const s = pc.connectionState;
         peer.conn = s === 'connected' ? 'connected' : s === 'failed' || s === 'closed' ? 'failed' : 'connecting';
+        note('par ' + id + ' conexão=' + s);
+        clearTimeout(peer.discTimer);
         if (s === 'failed') pc.restartIce();
+        else if (s === 'disconnected') peer.discTimer = setTimeout(() => pc.restartIce(), 4000);
         changed();
       };
 
+      if (!watchTimer) watchTimer = setInterval(watchdog, 3000);
+      tuneAll();
       let added = 0;
       for (const [kind, stream] of [['mic', local.mic], ['cam', local.cam], ['screen', local.screen]]) {
         if (!stream) continue;
@@ -330,6 +418,9 @@
       const peer = peers.get(id);
       if (!peer) return;
       peers.delete(id);
+      watch.delete(id);
+      clearTimeout(peer.discTimer);
+      tuneAll();
       peer.pc.onicecandidate = peer.pc.onnegotiationneeded = peer.pc.ontrack = null;
       peer.pc.onconnectionstatechange = peer.pc.onsignalingstatechange = null;
       try {
@@ -482,6 +573,9 @@
       stopMeter(myId);
       local.channel = local.mic = local.cam = local.screen = null;
       local.muted = local.deafened = local.mutedBeforeDeafen = false;
+      clearInterval(watchTimer);
+      watchTimer = null;
+      watch.clear();
       if (tickTimer) {
         clearInterval(tickTimer);
         tickTimer = null;
@@ -578,9 +672,19 @@
       if (!local.channel || local.screen) return;
       let stream;
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio });
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30 } },
+          // pede ao Chromium que não capture o som do próprio Concordo (voz dos amigos); ignorado se não houver suporte
+          audio: audio ? { suppressLocalAudioPlayback: true, restrictOwnAudio: true } : false,
+        });
       } catch (e) {
         throw friendlyError(e, 'a captura de tela');
+      }
+      if (audio && !stream.getAudioTracks().length) {
+        note('tela sem faixa de áudio');
+        local.screenNoAudio = true;
+      } else {
+        local.screenNoAudio = false;
       }
       if (!local.channel || local.screen) {
         stream.getTracks().forEach((t) => t.stop());
@@ -612,6 +716,7 @@
       restartMic,
       restartCamera,
       // usado nos testes: ganho e sinal de cada fonte de áudio recebida
+      diagnostics,
       debugAudio() {
         const out = [];
         for (const peer of peers.values()) {
@@ -644,6 +749,7 @@
         screen: local.screen,
         micError: local.micError,
         hasMic: !!local.mic,
+        screenNoAudio: !!local.screenNoAudio,
       }),
       speaking: (id) => speaking.has(id),
       peerIds: () => [...peers.keys()],
