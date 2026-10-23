@@ -172,12 +172,31 @@ function writeSettings(next) {
   return merged;
 }
 ipcMain.handle('app:show-window', () => showWindow());
+
+// Mensagens novas sem popup: contador vermelho no ícone da barra de tarefas, ícone piscando e dica na bandeja.
+let badgeCount = 0;
+ipcMain.handle('app:set-badge', (_event, args = {}) => {
+  if (!mainWindow) return false;
+  const n = Math.max(0, Math.min(999, Math.floor(Number(args.count)) || 0));
+  if (process.platform === 'win32') {
+    const icon = typeof args.icon === 'string' && /^data:image\/png;base64,[A-Za-z0-9+/=]{1,20000}$/.test(args.icon) ? args.icon : null;
+    try {
+      mainWindow.setOverlayIcon(n && icon ? nativeImage.createFromDataURL(icon) : null, n ? `${n} mensagens não lidas` : '');
+    } catch {
+      /* sem ícone de sobreposição */
+    }
+  }
+  if (n > badgeCount && !mainWindow.isFocused()) mainWindow.flashFrame(true);
+  if (!n) mainWindow.flashFrame(false);
+  badgeCount = n;
+  if (tray) tray.setToolTip(n ? `Concordo · ${n} não lidas` : 'Concordo');
+  return true;
+});
 ipcMain.handle('app:get-settings', () => readSettings());
 ipcMain.handle('app:set-settings', (_event, next) => writeSettings(next || {}));
 
 let tray = null;
 let quitting = false;
-let trayHintShown = false;
 
 function showWindow() {
   if (!mainWindow) return createWindow();
@@ -258,16 +277,9 @@ function createWindow() {
   mainWindow.on('close', (event) => {
     if (quitting || !tray || !readSettings().closeToTray) return;
     event.preventDefault();
-    mainWindow.hide();
-    if (!trayHintShown) {
-      trayHintShown = true;
-      try {
-        tray.displayBalloon({ title: 'Concordo continua aberto', content: 'Ele ficou na bandeja do sistema. Clique com o botão direito no ícone para sair.' });
-      } catch {
-        /* só Windows */
-      }
-    }
+    mainWindow.hide(); // sem aviso: o ícone na bandeja já mostra que o app continua aberto
   });
+  mainWindow.on('focus', () => mainWindow && mainWindow.flashFrame(false));
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

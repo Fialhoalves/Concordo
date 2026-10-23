@@ -181,6 +181,7 @@
     current: null,
     msgs: new Map(), // canal -> { list, hasMore }
     unread: new Map(),
+    away: 0, // mensagens recebidas com a janela sem foco (canal aberto)
     ws: null,
     retry: 0,
     timer: null,
@@ -793,6 +794,7 @@
       }
       teardownChat();
       S.bgUnread.delete(target.roomId);
+      updateBadge();
       enter();
     } catch (e) {
       toast(e.message, 'error');
@@ -850,13 +852,18 @@
         if (S.bg.get(id) !== c || m.userId === c.info.userId) return;
         S.bgUnread.set(id, (S.bgUnread.get(id) || 0) + 1);
         renderRail();
-        try {
-          const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
-          const n = new Notification(`${m.author} · ${c.info.name || 'outra sala'} · #${m.channel}`, { body });
-          n.onclick = () => (bridge.showWindow ? bridge.showWindow() : window.focus());
-        } catch {
-          /* notificações indisponíveis */
+        if (notifyMode() === 'none') return;
+        sfx('message');
+        if (notifyMode() === 'all' || (notifyMode() === 'mentions' && (m.mentions || []).includes(c.info.userId))) {
+          try {
+            const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
+            const n = new Notification(`${m.author} · ${c.info.name || 'outra sala'} · #${m.channel}`, { body });
+            n.onclick = () => (bridge.showWindow ? bridge.showWindow() : window.focus());
+          } catch {
+            /* notificações indisponíveis */
+          }
         }
+        updateBadge();
       };
       ws.onclose = () => {
         c.ws = null;
@@ -1061,6 +1068,7 @@
   async function selectChannel(id) {
     S.current = id;
     S.unread.delete(id);
+    updateBadge();
     renderChannels();
     const ch = S.channels.find((c) => c.id === id);
     const isVoice = !!ch && ch.type === 'voice';
@@ -1560,13 +1568,21 @@
       S.typing.get(m.channel).delete(m.userId);
       renderTyping();
     }
-    if (!mine && !document.hasFocus() && shouldNotify(m)) notify(m);
+    if (!mine) {
+      const away = !document.hasFocus();
+      if (away && m.channel === S.current) S.away = (S.away || 0) + 1; // nas outras abas o contador já é o S.unread
+      alertIncoming(m, { away, otherChannel: m.channel !== S.current });
+    }
   }
 
-  // modo de aviso: 'all' (padrão), 'mentions' (só quando citam você) ou 'none'
-  function shouldNotify(m) {
-    const mode = LS.get('concordo.notify', 'all');
-    if (mode === 'none') return false;
+  // Aviso de mensagens novas. Padrão ('badge'): só um som e um contador vermelho no ícone, sem popup do Windows.
+  // 'mentions': popup só quando citam você; 'all': popup em toda mensagem; 'none': nada.
+  const notifyMode = () => LS.get('concordo.notify', 'badge');
+
+  // A mensagem pede popup? (só com a janela sem foco)
+  function wantsPopup(m, mine) {
+    const mode = notifyMode();
+    if (mine || mode === 'badge' || mode === 'none') return false;
     if (mode === 'mentions') return (m.mentions || []).includes(S.session.user.id);
     return true;
   }
@@ -1580,6 +1596,51 @@
     } catch {
       /* notificações indisponíveis */
     }
+  }
+
+  // Contador de não lidas no ícone da barra de tarefas (e no tooltip da bandeja).
+  function totalUnread() {
+    let n = S.away || 0;
+    for (const v of S.unread.values()) n += v;
+    for (const v of S.bgUnread.values()) n += v;
+    return notifyMode() === 'none' ? 0 : n;
+  }
+
+  let badgeLast = -1;
+  function updateBadge() {
+    if (!bridge.setBadge) return;
+    const n = totalUnread();
+    if (n === badgeLast) return;
+    badgeLast = n;
+    let icon = null;
+    if (n) {
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = 32;
+        const g = c.getContext('2d');
+        g.fillStyle = '#e5484d';
+        g.beginPath();
+        g.arc(16, 16, 15, 0, Math.PI * 2);
+        g.fill();
+        g.fillStyle = '#fff';
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.font = `bold ${n > 9 ? 17 : 21}px sans-serif`;
+        g.fillText(n > 9 ? '9+' : String(n), 16, 17);
+        icon = c.toDataURL('image/png');
+      } catch {
+        /* sem canvas */
+      }
+    }
+    bridge.setBadge(n, icon).catch(() => {});
+  }
+
+  // Chegou mensagem de outra pessoa: som se eu não estou olhando para ela, popup só se o modo pedir.
+  function alertIncoming(m, { away, otherChannel }) {
+    if (notifyMode() === 'none') return;
+    if (away || otherChannel) sfx('message');
+    if (away && wantsPopup(m, false)) notify(m);
+    updateBadge();
   }
 
   // ============================================================
@@ -2440,11 +2501,15 @@
     const out = select('audiooutput', prefs.out, 'Saída');
     const canOut = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
     const notifySel = h('select', { class: 'input', 'data-role': 'notify-mode' },
-      h('option', { value: 'all' }, 'Todas as mensagens'),
-      h('option', { value: 'mentions' }, 'Só quando me citarem (@)'),
-      h('option', { value: 'none' }, 'Nenhuma'));
-    notifySel.value = LS.get('concordo.notify', 'all');
-    notifySel.addEventListener('change', () => LS.set('concordo.notify', notifySel.value));
+      h('option', { value: 'badge' }, 'Só som e contador (sem popup)'),
+      h('option', { value: 'mentions' }, 'Popup só quando me citarem (@)'),
+      h('option', { value: 'all' }, 'Popup em todas as mensagens'),
+      h('option', { value: 'none' }, 'Nenhum aviso'));
+    notifySel.value = LS.get('concordo.notify', 'badge');
+    notifySel.addEventListener('change', () => {
+      LS.set('concordo.notify', notifySel.value);
+      updateBadge();
+    });
     const soundsBox = h('input', { type: 'checkbox', 'data-role': 'sounds-on' });
     soundsBox.checked = LS.get('concordo.sounds', true) !== false;
     soundsBox.addEventListener('change', () => {
@@ -2739,6 +2804,8 @@
     S.ui = {};
     S.msgs = new Map();
     S.unread = new Map();
+    S.away = 0;
+    updateBadge();
   }
 
   async function leave() {
@@ -2866,6 +2933,10 @@
       renderBanner();
     });
     bridge.on('deeplink', handleDeepLink);
+    window.addEventListener('focus', () => {
+      S.away = 0;
+      updateBadge();
+    });
     // Outro computador já hospeda esta sala com uma geração mais nova: este deixa de ser host e entra como membro.
     bridge.on('host:superseded', async (ev) => {
       const s0 = S.session;

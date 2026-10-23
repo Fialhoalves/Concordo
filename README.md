@@ -199,3 +199,9 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Junção por ID**: ao entrar numa sala reaberta de uma cópia mais velha, o app devolve ao host o que só a sua cópia tem (mensagens, usuários, canais, edições, anexos). Mensagens têm ID único, então nada duplica nem some. Quem foi removido não ressuscita.
 - **Suas salas**: a tela inicial mostra se cada sala está aberta ("hospedada por fulano") ou fechada, e oferece **Reabrir com a minha cópia (há 3 dias)**. Antes de abrir, o app espera alguns segundos e confere o ponto de encontro: se alguém já abriu, você entra nessa sala.
 - Limites: sem votação, dois membros podem abrir a sala no mesmo instante; a sala se corrige sozinha em segundos e as mensagens dos dois lados são juntadas. As mensagens ainda não são assinadas (próxima versão): a junção confia nos membros da sala.
+
+## v0.11.1
+
+- **Sem popups do Windows por padrão**: mensagem nova toca um som curto, põe um contador vermelho no ícone da barra de tarefas e faz o ícone piscar. O contador zera quando você volta ao app.
+- Em Configurações → "Avisar de mensagens novas" dá para escolher popup só quando citarem você, popup em tudo, ou nenhum aviso.
+- Fechar pelo X não mostra mais o aviso "continua aberto": o ícone na bandeja já indica.

@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('concordo', {
   backupReconcile: (args) => ipcRenderer.invoke('backup:reconcile', args),
   roomsStatus: (list) => ipcRenderer.invoke('rooms:status', list),
   rendezvousResolve: (rv) => ipcRenderer.invoke('rendezvous:resolve', rv),
+  setBadge: (count, icon) => ipcRenderer.invoke('app:set-badge', { count, icon }),
   showWindow: () => ipcRenderer.invoke('app:show-window'),
   getSettings: () => ipcRenderer.invoke('app:get-settings'),
   setSettings: (next) => ipcRenderer.invoke('app:set-settings', next),
