@@ -1,0 +1,80 @@
+/* Tokens da identidade visual do Concordo (tema escuro por padrão; claro por preferência do sistema
+   ou escolha manual em Configurações → Aparência: html[data-theme="light" | "dark"]). */
+:root {
+  /* marca */
+  --concordo-violet: #7c5cff;
+  --concordo-violet-light: #9a81ff;
+  --concordo-violet-deep: #6d4aff;
+  --concordo-teal: #00d084;
+  --concordo-teal-alt: #00cfa4;
+  --gradient-brand: linear-gradient(110deg, #7c5cff 0%, #00d084 100%);
+
+  /* forma */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --motion-fast: 120ms;
+  --motion: 160ms;
+
+  /* tipografia */
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  /* tema escuro */
+  --color-bg: #0f111a;
+  --color-panel: #151927;
+  --color-panel-elevated: #1b2233;
+  --color-hover: #232b40;
+  --color-border: #2d3548;
+  --color-text: #f8fafc;
+  --color-text-secondary: #b8c2d6;
+  --color-text-muted: #8491a8;
+  --color-online: #00d084;
+  --color-warning: #f5b942;
+  --color-danger: #f46d75;
+  --surface-sidebar: #0f111a;
+  --surface-main: #151927;
+  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --overlay: rgba(6, 8, 14, 0.66);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --color-bg: #f8fafc;
+  --color-panel: #ffffff;
+  --color-panel-elevated: #f1f5f9;
+  --color-hover: #e8edf5;
+  --color-border: #d9e1ec;
+  --color-text: #111827;
+  --color-text-secondary: #52627a;
+  --color-text-muted: #718096;
+  --color-online: #009f6b;
+  --color-warning: #a76500;
+  --color-danger: #d94250;
+  --surface-sidebar: #f1f5f9;
+  --surface-main: #ffffff;
+  --shadow-pop: 0 8px 30px rgba(17, 24, 39, 0.16);
+  --overlay: rgba(17, 24, 39, 0.4);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --color-bg: #f8fafc;
+    --color-panel: #ffffff;
+    --color-panel-elevated: #f1f5f9;
+    --color-hover: #e8edf5;
+    --color-border: #d9e1ec;
+    --color-text: #111827;
+    --color-text-secondary: #52627a;
+    --color-text-muted: #718096;
+    --color-online: #009f6b;
+    --color-warning: #a76500;
+    --color-danger: #d94250;
+    --surface-sidebar: #f1f5f9;
+    --surface-main: #ffffff;
+    --shadow-pop: 0 8px 30px rgba(17, 24, 39, 0.16);
+    --overlay: rgba(17, 24, 39, 0.4);
+    color-scheme: light;
+  }
+}

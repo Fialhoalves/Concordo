@@ -1,6 +1,6 @@
 {
   "name": "concordo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Bate-papo entre amigos que roda no seu PC. Sem servidor de terceiros.",
   "main": "src/main/main.js",
   "license": "MIT",
@@ -8,7 +8,8 @@
     "start": "electron .",
     "test": "node --test",
     "dist": "electron-builder --win --publish never",
-    "release": "electron-builder --win --publish always"
+    "release": "electron-builder --win --publish always",
+    "icons": "node tools/build-icons.js"
   },
   "build": {
     "appId": "app.concordo.desktop",
@@ -45,7 +46,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": true,

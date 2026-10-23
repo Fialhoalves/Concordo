@@ -8,6 +8,8 @@
   const $app = document.getElementById('app');
   const $banner = document.getElementById('banner');
   const $toasts = document.getElementById('toasts');
+  // ícones do kit (SVG inline, herdam a cor do texto)
+  const ico = (name, size = 20, cls) => window.ConcordoIcons.icon(name, { size, class: cls });
 
   // ============================================================
   // utilidades
@@ -74,16 +76,18 @@
   }
 
   function colorFor(id) {
+    // cores de avatar/nome derivadas da paleta da marca (contraste suficiente com texto branco)
+    const PALETTE = ['#6d4aff', '#0e9f8e', '#c0457a', '#b7791f', '#2f6fdb', '#8b5cf6', '#0891b2', '#be4b4b'];
     let n = 0;
     for (const ch of String(id)) n = (n * 31 + ch.charCodeAt(0)) >>> 0;
-    return `hsl(${n % 360} 55% 45%)`;
+    return PALETTE[n % PALETTE.length];
   }
 
   function avatar(id, name, { big = false, presence = false } = {}) {
     const initial = Array.from((name || '?').trim())[0] || '?';
     const el = h('div', { class: 'avatar' + (big ? ' big' : '') }, initial.toUpperCase());
     el.style.background = colorFor(id);
-    if (presence) el.append(h('span', { class: 'presence' + (S.online.has(id) ? ' on' : '') }));
+    if (presence) el.append(h('span', { class: 'presence' + (S.online.has(id) ? ' on' : ''), title: S.online.has(id) ? 'Online' : 'Offline' }));
     return el;
   }
 
@@ -275,7 +279,7 @@
                       showWelcome();
                     }
                   },
-                }, '✕')));
+                }, ico('close', 16))));
           }),
         )
       : null;
@@ -285,14 +289,18 @@
 
     mount(
       h('div', { class: 'center' },
-        h('div', { class: 'logo' }, 'C'),
-        h('div', { class: 'title' }, 'Concordo'),
+        h('div', { class: 'brand' },
+          h('img', { class: 'brand-symbol', src: 'assets/brand/concordo-symbol.svg', alt: '' }),
+          h('div', { class: 'brand-name' }, 'Concordo'),
+          h('div', { class: 'brand-sign' }, 'Converse · Compartilhe · Juntos')),
         h('p', { class: 'tagline' }, 'Bate-papo entre amigos que roda no seu PC. Sem cadastro e sem servidor de terceiros.'),
         h('div', { class: 'cards' },
           h('button', { class: 'card', onclick: showHostSetup },
+            ico('chat', 26),
             h('h3', null, 'Hospedar'),
             h('p', null, 'Crie uma sala. Seu computador vira o servidor e você convida a galera.')),
           h('button', { class: 'card', onclick: () => showJoin() },
+            ico('invite', 26),
             h('h3', null, 'Entrar'),
             h('p', null, 'Tem um código de convite? Cole aqui e entre na sala de um amigo.'))),
         savedList,
@@ -503,7 +511,7 @@
     ui.messages = h('div', { class: 'messages' });
     ui.uploadStatus = h('div', { class: 'upload-status' });
     ui.textarea = h('textarea', { rows: '1', placeholder: 'Escreva uma mensagem…', maxlength: '4000' });
-    ui.inviteBtn = h('button', { class: 'btn small', onclick: openInviteModal }, 'Convidar');
+    ui.inviteBtn = h('button', { class: 'btn small with-icon', onclick: openInviteModal }, ico('invite', 16), 'Convidar');
 
     ui.textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -529,14 +537,14 @@
     const me = S.session.user;
     const meBar = h('div', { class: 'me-bar' },
       h('div', { class: 'who' }, avatar(me.id, me.name), h('span', null, me.name),
-        h('button', { class: 'btn ghost small', title: 'Áudio e vídeo', 'data-act': 'settings', onclick: openVoiceSettings }, '⚙')),
+        h('button', { class: 'btn ghost small', title: 'Áudio e vídeo', 'data-act': 'settings', onclick: openVoiceSettings, 'aria-label': 'Configurações' }, ico('settings', 18))),
       S.isHost
         ? h('div', { class: 'row' },
             ui.inviteBtn,
             h('button', { class: 'btn small danger', onclick: endRoom }, 'Encerrar'))
-        : h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => leave() }, 'Sair da sala')));
+        : h('div', { class: 'row' }, h('button', { class: 'btn small with-icon', onclick: () => leave() }, ico('log-out', 16), 'Sair da sala')));
 
-    const addChannelBtn = h('button', { class: 'btn ghost', title: 'Novo canal', onclick: openChannelModal }, '+');
+    const addChannelBtn = h('button', { class: 'btn ghost', title: 'Novo canal', 'aria-label': 'Novo canal', onclick: openChannelModal }, ico('plus', 16));
 
     ui.stage = h('div', { class: 'stage' });
     ui.voicePanel = h('div', { class: 'voice-panel', hidden: true });
@@ -550,10 +558,10 @@
       h('div', { class: 'composer-wrap' },
         ui.uploadStatus,
         h('div', { class: 'composer' },
-          h('button', { class: 'btn ghost', title: 'Enviar arquivo', onclick: () => fileInput.click() }, '📎'),
+          h('button', { class: 'btn ghost', title: 'Enviar arquivo', onclick: () => fileInput.click(), 'aria-label': 'Enviar arquivo' }, ico('paperclip', 20)),
           fileInput,
           ui.textarea,
-          h('button', { class: 'btn primary', onclick: sendMessage }, 'Enviar'))),
+          h('button', { class: 'btn primary with-icon', onclick: sendMessage }, ico('send', 16), 'Enviar'))),
       h('div', { class: 'drop' }, 'Solte os arquivos para enviar'));
 
     const dragHasFiles = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes('Files');
@@ -679,7 +687,7 @@
           class: 'channel' + (ch.id === S.current ? ' active' : '') + (isVoice ? ' voice' : ''),
           'data-channel': ch.id,
           onclick: () => selectChannel(ch.id),
-        }, h('span', { class: 'hash' }, isVoice ? '🔊' : '#'), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
+        }, h('span', { class: 'hash' }, ico(isVoice ? 'voice' : 'channels', 18)), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
         if (!isVoice) return row;
         const people = S.voice.rooms[ch.id] || [];
         return h('div', null, row,
@@ -691,8 +699,8 @@
               'data-user': p.id,
             }, avatar(p.id, name), h('span', { class: 'name' }, name),
               p.screen ? h('span', { class: 'live', title: 'Compartilhando a tela' }, 'AO VIVO') : null,
-              p.cam ? h('span', { title: 'Câmera ligada' }, '📷') : null,
-              p.deafened ? h('span', { title: 'Sem áudio' }, '🎧✕') : p.muted ? h('span', { title: 'Microfone desligado' }, '🎙️✕') : null);
+              p.cam ? h('span', { title: 'Câmera ligada' }, ico('camera', 14)) : null,
+              p.deafened ? h('span', { title: 'Sem áudio' }, ico('headphones-off', 14)) : p.muted ? h('span', { title: 'Microfone desligado' }, ico('microphone-off', 14)) : null);
           }));
       }),
     );
@@ -711,21 +719,21 @@
         h('div', { class: 'member' + (S.online.has(u.id) ? '' : ' offline'), 'data-user': u.id },
           avatar(u.id, u.name, { presence: true }),
           h('span', { class: 'name' }, u.name),
-          u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, '👑') : null,
-          u.id === S.heir ? h('span', { class: 'heir', title: 'Sucessor: guarda uma cópia e assume a sala se o host sair' }, '🛡️') : null,
+          u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, ico('crown', 14)) : null,
+          u.id === S.heir ? h('span', { class: 'heir', title: 'Sucessor: guarda uma cópia e assume a sala se o host sair' }, ico('shield-lock', 14)) : null,
           me.role === 'owner' && u.role !== 'owner' && u.id !== S.heir
             ? h('button', {
                 class: 'btn small ghost kick',
                 title: 'Tornar sucessor (assume a sala se você sair)',
                 onclick: () => makeHeir(u),
-              }, '🛡️')
+              }, ico('shield-lock', 14))
             : null,
           me.role === 'owner' && u.id !== me.id
             ? h('button', {
                 class: 'btn small ghost kick',
                 title: 'Remover da sala',
                 onclick: () => removeMember(u),
-              }, '✕')
+              }, ico('close', 14))
             : null),
       ),
     );
@@ -756,7 +764,7 @@
     renderChannels();
     const ch = S.channels.find((c) => c.id === id);
     const isVoice = !!ch && ch.type === 'voice';
-    S.ui.chName.textContent = (isVoice ? '🔊 ' : '# ') + (ch ? ch.name : id);
+    S.ui.chName.replaceChildren(ico(isVoice ? 'voice' : 'channels', 20), document.createTextNode(ch ? ch.name : id));
     S.ui.main.classList.toggle('is-voice', isVoice);
     if (isVoice) {
       renderStage();
@@ -841,7 +849,7 @@
       return h('div', { class: 'att' }, img);
     }
     return h('div', { class: 'att file' },
-      h('div', { class: 'att-icon' }, '📄'),
+      h('div', { class: 'att-icon' }, ico('file', 24)),
       h('div', { class: 'att-info' },
         h('div', { class: 'att-name', title: a.name }, a.name),
         h('div', { class: 'att-size' }, fmtSize(a.size))),
@@ -881,7 +889,7 @@
   function notify(m) {
     try {
       const user = S.users.get(m.userId);
-      const body = m.text || (m.attachments && m.attachments[0] ? '📎 ' + m.attachments[0].name : '');
+      const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
       const n = new Notification(`${user ? user.name : m.author} · #${m.channel}`, { body });
       n.onclick = () => window.focus();
     } catch {
@@ -1108,7 +1116,8 @@
       return;
     }
     ui.heirNote.hidden = false;
-    ui.heirNote.textContent = '🛡️ Você é o sucessor desta sala · cópia: ' + (S.backup && S.backup.error ? 'falhou (' + S.backup.error + ')' : ago(S.backup && S.backup.at));
+    ui.heirNote.replaceChildren(ico('shield-lock', 14),
+      document.createTextNode('Você é o sucessor desta sala · cópia: ' + (S.backup && S.backup.error ? 'falhou (' + S.backup.error + ')' : ago(S.backup && S.backup.at))));
   }
 
   // O host some: o sucessor vê um aviso fixo e decide se assume.
@@ -1124,11 +1133,11 @@
     if (!ui.takeover.hidden) return;
     ui.takeover.hidden = false;
     bridge.backupStatus(S.session.room.id).then((info) => {
-      ui.takeover.replaceChildren(
+      ui.takeover.replaceChildren(...[
         h('span', null, info
           ? `O host parece ter saído. Você tem uma cópia da sala (${ago(info.at)}).`
           : 'O host parece ter saído, mas você ainda não tem uma cópia desta sala.'),
-        info ? h('button', { class: 'btn small primary', 'data-act': 'takeover', onclick: takeOverRoom }, 'Assumir a sala') : null);
+        info ? h('button', { class: 'btn small primary', 'data-act': 'takeover', onclick: takeOverRoom }, 'Assumir a sala') : null].filter(Boolean));
     });
   }
 
@@ -1258,26 +1267,26 @@
     const connected = peers.filter((id) => (v.client.peer(id) || {}).conn === 'connected').length;
     const status = peers.length === 0 ? 'Sozinho(a) na sala' : connected === peers.length ? 'Conectado' : 'Conectando…';
     const btn = (act, label, title, on, onclick, extra = '') =>
-      h('button', { class: 'vbtn' + (on ? ' on' : '') + extra, 'data-act': act, title, onclick }, label);
-    panel.replaceChildren(
+      h('button', { class: 'vbtn' + (on ? ' on' : '') + extra, 'data-act': act, title, 'aria-label': title, 'aria-pressed': on ? 'true' : 'false', onclick }, label);
+    panel.replaceChildren(...[
       h('div', { class: 'vstatus' },
         h('span', { class: 'dot ' + (connected === peers.length ? 'ok' : 'wait') }),
         h('div', null,
           h('div', { class: 'vtitle' }, status),
-          h('div', { class: 'vsub' }, '🔊 ' + (ch ? ch.name : ''))),
+          h('div', { class: 'vsub' }, ch ? ch.name : '')),
         ),
       !st.hasMic ? h('div', { class: 'vwarn' }, 'Sem microfone — você só ouve.') : null,
       h('div', { class: 'vbtns' },
-        btn('mute', st.muted ? '🔇' : '🎙️', st.muted ? 'Ligar microfone' : 'Silenciar microfone', st.muted,
+        btn('mute', ico(st.muted ? 'microphone-off' : 'microphone', 20), st.muted ? 'Ligar microfone' : 'Silenciar microfone', st.muted,
           () => v.client.setMuted(!st.muted), ' danger-on'),
-        btn('deafen', '🎧', st.deafened ? 'Voltar a ouvir' : 'Ensurdecer (não ouvir ninguém)', st.deafened,
+        btn('deafen', ico(st.deafened ? 'headphones-off' : 'headphones', 20), st.deafened ? 'Voltar a ouvir' : 'Ensurdecer (não ouvir ninguém)', st.deafened,
           () => v.client.setDeafened(!st.deafened), ' danger-on'),
-        btn('cam', '📷', st.cam ? 'Desligar câmera' : 'Ligar câmera', !!st.cam,
+        btn('cam', ico(st.cam ? 'camera' : 'camera-off', 20), st.cam ? 'Desligar câmera' : 'Ligar câmera', !!st.cam,
           () => voiceAction(() => v.client.setCamera(!st.cam))),
-        btn('screen', '🖥️', st.screen ? 'Parar de compartilhar a tela' : 'Compartilhar tela', !!st.screen,
+        btn('screen', ico('screen-share', 20), st.screen ? 'Parar de compartilhar a tela' : 'Compartilhar tela', !!st.screen,
           () => (st.screen ? v.client.stopScreen() : voiceAction(startScreenShare))),
-        btn('leave', '📞', 'Sair da chamada', false, () => leaveVoice(), ' leave')),
-    );
+        btn('leave', ico('call-end', 20), 'Sair da chamada', false, () => leaveVoice(), ' leave')),
+    ].filter(Boolean));
   }
 
   function tileFor(key) {
@@ -1297,7 +1306,7 @@
       h('button', { class: 'tile-full', title: 'Tela cheia', onclick: (e) => {
         e.stopPropagation();
         if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
-      } }, '⛶'));
+      } }, ico('maximize', 16)));
     v.tiles.set(key, tile);
     return tile;
   }
@@ -1321,8 +1330,9 @@
     const label = tile.querySelector('.tile-label');
     const me = id === S.session.user.id;
     const base = nameOf(id) + (me ? ' (você)' : '') + (kind === 'screen' ? ' — tela' : '');
-    const icons = kind === 'user' && entry ? (entry.deafened ? ' 🎧✕' : entry.muted ? ' 🎙️✕' : '') : '';
-    label.textContent = base + icons + (conn === 'connecting' ? ' · conectando…' : conn === 'failed' ? ' · sem conexão' : '');
+    const state = kind === 'user' && entry ? (entry.deafened ? ico('headphones-off', 14) : entry.muted ? ico('microphone-off', 14) : null) : null;
+    label.replaceChildren(document.createTextNode(base), ...(state ? [state] : []),
+      document.createTextNode(conn === 'connecting' ? ' · conectando…' : conn === 'failed' ? ' · sem conexão' : ''));
   }
 
   function renderStage() {
@@ -1338,7 +1348,7 @@
       stage.className = 'stage lobby';
       stage.replaceChildren(
         h('div', { class: 'lobby-card' },
-          h('div', { class: 'lobby-icon' }, '🔊'),
+          h('div', { class: 'lobby-icon' }, ico('voice', 44)),
           h('h2', null, ch.name),
           h('p', { class: 'hint' }, people.length
             ? people.map((p) => nameOf(p.id)).join(', ') + (people.length === 1 ? ' está aqui.' : ' estão aqui.')
@@ -1517,6 +1527,45 @@
     ];
   }
 
+  // Aparência: Automático (segue o sistema), Claro ou Escuro. Guardado como texto puro para o theme.js ler cedo.
+  function currentTheme() {
+    try {
+      const t = localStorage.getItem('concordo.theme');
+      return t === 'light' || t === 'dark' ? t : 'auto';
+    } catch {
+      return 'auto';
+    }
+  }
+
+  function applyTheme(mode) {
+    try {
+      if (mode === 'auto') localStorage.removeItem('concordo.theme');
+      else localStorage.setItem('concordo.theme', mode);
+    } catch {
+      /* sem armazenamento: vale só até fechar */
+    }
+    if (mode === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', mode);
+  }
+
+  function themeChoice() {
+    const wrap = h('div', { class: 'theme-choice', role: 'group', 'aria-label': 'Tema' });
+    const options = [['auto', 'Automático', null], ['light', 'Claro', 'sun'], ['dark', 'Escuro', 'moon']];
+    const paint = () => {
+      for (const b of wrap.children) {
+        const on = b.dataset.theme === currentTheme();
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      }
+    };
+    for (const [mode, label, icon] of options) {
+      wrap.append(h('button', { class: 'btn with-icon', 'data-theme': mode, onclick: () => { applyTheme(mode); paint(); } },
+        icon ? ico(icon, 16) : null, label));
+    }
+    paint();
+    return wrap;
+  }
+
   async function openVoiceSettings() {
     let devices = [];
     try {
@@ -1562,7 +1611,10 @@
     cam.addEventListener('change', () => change({ cam: cam.value || null }, 'cam'));
     out.addEventListener('change', () => change({ out: out.value || null }, 'out'));
     const close = modal([
-      h('h3', null, 'Áudio e vídeo'),
+      h('h3', null, 'Configurações'),
+      h('h4', { class: 'sub' }, 'Aparência'),
+      themeChoice(),
+      h('h4', { class: 'sub' }, 'Áudio'),
       h('div', { class: 'field' }, h('label', null, 'Microfone'), mic),
       canOut ? h('div', { class: 'field' }, h('label', null, 'Saída de som'), out) : null,
       h('div', { class: 'field' }, h('label', null, 'Câmera'), cam),
@@ -1675,8 +1727,8 @@
   function openChannelModal() {
     const name = h('input', { class: 'input', maxlength: '24', placeholder: 'ex: jogos' });
     const type = h('select', { class: 'input' },
-      h('option', { value: 'text' }, '# Texto'),
-      h('option', { value: 'voice' }, '🔊 Voz e vídeo'));
+      h('option', { value: 'text' }, 'Texto'),
+      h('option', { value: 'voice' }, 'Voz e vídeo'));
     const err = h('div', { class: 'hint' });
     const create = async () => {
       try {

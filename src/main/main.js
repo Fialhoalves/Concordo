@@ -156,8 +156,9 @@ function createWindow() {
     height: 720,
     minWidth: 820,
     minHeight: 520,
-    backgroundColor: '#16171b',
+    backgroundColor: '#0f111a',
     title: 'Concordo',
+    icon: path.join(__dirname, 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

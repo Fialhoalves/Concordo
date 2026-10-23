@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Concordo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B2233"/><stop offset="1" stop-color="#0F111A"/></linearGradient>
+    <linearGradient id="cv" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#9A81FF"/><stop offset="1" stop-color="#6D4AFF"/></linearGradient>
+    <linearGradient id="ct" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#00D9A0"/><stop offset="1" stop-color="#00CFA4"/></linearGradient>
+    <clipPath id="cl"><rect x="-14" y="0" width="28" height="40"/></clipPath>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <rect x="8.5" y="8.5" width="239" height="239" rx="55.5" fill="none" stroke="#2D3548" stroke-opacity=".7"/>
+  <g transform="translate(128 128) scale(1.72) rotate(-30)" fill="none" stroke-width="13" stroke-linejoin="round">
+    <rect x="-47" y="-17" width="56" height="34" rx="17" stroke="url(#cv)"/>
+    <rect x="-9" y="-17" width="56" height="34" rx="17" stroke="url(#ct)"/>
+    <g clip-path="url(#cl)"><rect x="-47" y="-17" width="56" height="34" rx="17" stroke="url(#cv)"/></g>
+  </g>
+</svg>

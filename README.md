@@ -155,3 +155,10 @@ Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirma�
 1. ~~Voz, vídeo e compartilhamento de tela~~ (feito na v0.2). Ideias seguintes: escolher microfone/saída de som, SFU opcional para salas maiores.
 2. ~~Endereço fixo via *named tunnel*~~ (feito na v0.2.1).
 3. ~~Migração de host: outro membro assume a sala quando o host sai~~ (feito na v0.4.0, com troca de endereço manual).
+
+## Identidade visual (v0.6.0)
+
+- Tokens de cor/raio/movimento em `src/renderer/styles/tokens.css`, temas **escuro**, **claro** e **automático** (Configurações → Aparência).
+- Ícones em `src/renderer/assets/icons/*.svg` (24×24, contorno 1.8, `currentColor`). Depois de editar/trocar um SVG rode `npm run icons` para regenerar `src/renderer/icons.js`.
+- Símbolo e ícone do app em `src/renderer/assets/brand/`; `build/icon.ico` é usado no instalador.
+- Fonte: Inter se instalada, com fallback Segoe UI.
