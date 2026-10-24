@@ -601,3 +601,7 @@ a { color: var(--concordo-violet-light); }
 .tile-zoom { position: absolute; left: 8px; top: 8px; z-index: 3; border: 0; border-radius: 6px; padding: 2px 8px; font-size: 12px; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; }
 .tile-zoom[hidden] { display: none; }
 .tile video { transform-origin: 0 0; will-change: transform; }
+
+/* v0.20: confirmação de leitura */
+.seen { display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 2px 16px 6px; font-size: 11px; color: var(--muted); }
+.seen .avatar { width: 16px; height: 16px; font-size: 9px; }

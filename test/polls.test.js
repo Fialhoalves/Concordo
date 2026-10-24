@@ -180,3 +180,25 @@ test('soundboard: só dentro da chamada, só ids válidos, com intervalo mínimo
   assert.equal(hear(wa).length, 1, 'quem apertou também recebe (e toca)');
   for (const w of [wa, wb, wc]) w.close();
 });
+
+test('confirmação de leitura: só sobe, vai para quem vê o canal e entra no /api/state', async () => {
+  const a = await joinAs('Lia');
+  const b = await joinAs('Davi');
+  const wa = await connect(a.token);
+  const wb = await connect(b.token);
+  const now = Date.now();
+  wa.send(JSON.stringify({ t: 'read', channel: 'geral', ts: now - 1000 }));
+  const ev = await waitFor(() => wb.events.find((e) => e.t === 'read' && e.user === a.id));
+  assert.equal(ev.channel, 'geral');
+  assert.equal(ev.ts, now - 1000);
+  wa.send(JSON.stringify({ t: 'read', channel: 'geral', ts: now - 5000 })); // voltar atrás é ignorado
+  wa.send(JSON.stringify({ t: 'read', channel: 'geral', ts: now + 10 * 60 * 1000 })); // futuro é cortado em "agora"
+  await waitFor(() => wb.events.filter((e) => e.t === 'read' && e.user === a.id).length >= 2);
+  const reads = wb.events.filter((e) => e.t === 'read' && e.user === a.id);
+  assert.equal(reads.length, 2);
+  assert.ok(reads[1].ts <= Date.now());
+  const st = await call(b.token, 'GET', '/api/state');
+  assert.equal(st.json.reads.geral[a.id], reads[1].ts);
+  wa.close();
+  wb.close();
+});

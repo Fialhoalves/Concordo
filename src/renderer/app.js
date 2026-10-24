@@ -202,6 +202,12 @@
     status.value = me.status || 'online';
     const text = h('input', { class: 'input', maxlength: '60', placeholder: 'O que você está fazendo? (opcional)', 'data-role': 'profile-text' });
     text.value = me.statusText || '';
+    const readsBox = h('input', { type: 'checkbox', 'data-role': 'share-reads' });
+    readsBox.checked = shareReads();
+    readsBox.addEventListener('change', () => {
+      LS.set('concordo.shareReads', readsBox.checked);
+      updateSeen();
+    });
     paint();
     paintSwatches();
     const close = modal([
@@ -214,6 +220,7 @@
       h('div', { class: 'field' }, h('label', null, 'Cor do seu nome e do avatar nesta sala'), swatches),
       h('div', { class: 'field' }, h('label', null, 'Situação'), status),
       h('div', { class: 'field' }, h('label', null, 'Frase de situação'), text),
+      h('label', { class: 'check' }, readsBox, h('span', null, 'Confirmação de leitura: mostrar quando eu li e ver quem leu as minhas (desligada, você também não vê a dos outros)')),
       h('div', { class: 'row end' },
         h('button', { class: 'btn', onclick: () => close() }, 'Cancelar'),
         h('button', { class: 'btn primary', 'data-act': 'profile-save', onclick: async () => {
@@ -316,6 +323,7 @@
     msgs: new Map(), // canal -> { list, hasMore }
     hostedList: [], // salas que eu hospedo: { roomId, name, running, info }
     unread: new Map(),
+    reads: {},
     away: 0, // mensagens recebidas com a janela sem foco (canal aberto)
     ws: null,
     retry: 0,
@@ -1368,6 +1376,8 @@
     S.limits = st.limits;
     S.ice = st.ice || [];
     S.heir = st.heir || null;
+    S.reads = st.reads || {};
+    S.sentRead = new Map();
     S.succession = st.succession || [];
     S.voice.rooms = st.voice || {};
     S.session.user = st.you;
@@ -1574,6 +1584,39 @@
     if (!entry || !entry.list.length) return;
     const ts = entry.list[entry.list.length - 1].ts;
     if (ts > lastRead(ch)) setRoomLS('concordo.lastRead', { ...roomLS('concordo.lastRead'), [ch]: ts });
+    sendRead(ch, ts);
+  }
+
+  // ---------- confirmação de leitura ----------
+  const shareReads = () => LS.get('concordo.shareReads', true) !== false;
+  function sendRead(ch, ts) {
+    if (!shareReads() || !S.session) return;
+    if (!S.sentRead) S.sentRead = new Map();
+    if ((S.sentRead.get(ch) || 0) >= ts) return;
+    S.sentRead.set(ch, ts);
+    const me = S.session.user.id;
+    (S.reads[ch] = S.reads[ch] || {})[me] = ts;
+    wsSend({ t: 'read', channel: ch, ts });
+  }
+  function updateSeen() {
+    const box = S.ui.messages;
+    if (!box) return;
+    box.querySelectorAll('.seen').forEach((n) => n.remove());
+    const entry = S.msgs.get(S.current);
+    if (!shareReads() || !entry || !entry.list.length) return;
+    const last = entry.list[entry.list.length - 1];
+    const me = S.session.user.id;
+    if (last.userId !== me || last.deleted) return;
+    const readers = Object.entries(S.reads[S.current] || {})
+      .filter(([uid, ts]) => uid !== me && ts >= last.ts && S.users.has(uid))
+      .map(([uid]) => uid);
+    if (!readers.length) return;
+    const dm = isDmId(S.current);
+    const names = readers.map(nameOf);
+    const shown = readers.slice(0, 5);
+    box.append(h('div', { class: 'seen', 'data-role': 'seen', title: names.join(', ') },
+      ...shown.map((id) => avatar(id, nameOf(id), { small: true })),
+      h('span', null, dm ? 'Visto' : `Visto por ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` e mais ${names.length - 3}` : ''}`)));
   }
   function markChannelRead(ch) {
     S.unread.delete(ch);
@@ -1684,6 +1727,7 @@
       prev = m;
     }
     box.replaceChildren(...nodes);
+    updateSeen();
     box.scrollTop = keepScroll ? box.scrollHeight - prevHeight + prevTop : box.scrollHeight;
   }
 
@@ -2319,7 +2363,9 @@
     const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
     const empty = box.querySelector('.empty');
     if (empty) empty.remove();
+    box.querySelectorAll('.seen').forEach((n) => n.remove());
     box.append(...messageNodes(m, prev));
+    updateSeen();
     if (nearBottom || m.userId === S.session.user.id) box.scrollTop = box.scrollHeight;
   }
 
@@ -2708,6 +2754,11 @@
         return onHostLeaving(d);
       case 'msg_update':
         return applyMessageUpdate(d.message);
+      case 'read': {
+        (S.reads[d.channel] = S.reads[d.channel] || {})[d.user] = d.ts;
+        if (d.channel === S.current) updateSeen();
+        return;
+      }
       case 'typing':
         return onTyping(d);
       case 'soundboard': {

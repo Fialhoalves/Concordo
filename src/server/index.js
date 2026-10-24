@@ -355,6 +355,7 @@ async function createConcordoServer(opts = {}) {
         ice: iceServers,
         heir: (store.getHeir() || {}).id || null,
         succession: store.succession(),
+        reads: store.readsFor(user.id),
       });
     }
 
@@ -786,6 +787,13 @@ async function createConcordoServer(opts = {}) {
           if (id === user.id || (dmCh.type === 'dm' && !(dmCh.members || []).includes(id))) continue;
           for (const w of set) if (w.readyState === OPEN) w.send(out);
         }
+        return;
+      }
+
+      if (data.t === 'read') {
+        if (!store.hasChannel(data.channel, 'text') || !store.getUser(user.id) || !store.canSee(user.id, data.channel)) return;
+        const ts = store.setRead(user.id, data.channel, data.ts);
+        if (ts) broadcastCh(data.channel, { t: 'read', channel: data.channel, user: user.id, ts });
         return;
       }
 

@@ -102,6 +102,7 @@ class Store {
       pins: {},
       votes: {}, // id da enquete -> { userId: { o: [índices], at } }
       pollClosed: {},
+      reads: {}, // canal -> { userId: ts da última mensagem lida }
       sigs: {}, // assinaturas de mensagens com arquivo (assinadas depois do envio)
       banned: {}, // hash da chave pública -> { name, at }
       rendezvous: null,
@@ -515,6 +516,15 @@ class Store {
       }
       if (!Object.keys(mine).length) delete st.votes[id];
     }
+    st.reads = st.reads || {};
+    for (const [ch, byUser] of Object.entries(own(other.reads))) {
+      if (!/^[a-z0-9_-]{1,80}$/.test(ch)) continue;
+      for (const [uid, ts] of Object.entries(own(byUser))) {
+        if (!ID12.test(uid) || !Number.isFinite(Number(ts))) continue;
+        const mine = (st.reads[ch] = st.reads[ch] || {});
+        if (Number(ts) > (mine[uid] || 0)) mine[uid] = Number(ts);
+      }
+    }
     for (const id of Object.keys(own(other.pollClosed))) if (/^[a-f0-9]{16}$/.test(id)) st.pollClosed[id] = true;
     for (const [h, b] of Object.entries(own(other.banned))) {
       if (/^[a-f0-9]{32}$/.test(h) && !st.banned[h]) st.banned[h] = { name: String((b || {}).name || '').slice(0, 24), at: Number((b || {}).at) || Date.now() };
@@ -814,6 +824,25 @@ class Store {
     this.state.pollClosed[id] = true;
     this.save();
     return this.decorate(m);
+  }
+
+  // confirmação de leitura: só sobe (nunca volta atrás) e nunca fica no futuro
+  setRead(userId, channel, ts) {
+    ts = Number(ts);
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    ts = Math.min(ts, Date.now());
+    this.state.reads = this.state.reads || {};
+    const mine = (this.state.reads[channel] = this.state.reads[channel] || {});
+    if (ts <= (mine[userId] || 0)) return null;
+    mine[userId] = ts;
+    this.save();
+    return ts;
+  }
+
+  readsFor(userId) {
+    const out = {};
+    for (const ch of this.channelsFor(userId)) if (this.state.reads && this.state.reads[ch.id]) out[ch.id] = this.state.reads[ch.id];
+    return out;
   }
 
   // assinatura de mensagem com arquivo (o texto é vazio; o que vale é a lista de anexos)

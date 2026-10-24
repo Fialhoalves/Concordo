@@ -256,3 +256,7 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 ## v0.19.0
 
 - **Zoom na tela compartilhada**: role o mouse sobre a tela de alguém para aproximar (até 8x, na direção do cursor), arraste para mover a imagem, dê duplo clique ou clique em "% ✕" para voltar ao normal. Arrastar não troca o foco do quadro.
+
+## v0.20.0
+
+- **Confirmação de leitura**: quando a sua última mensagem do canal (ou da conversa direta) já foi lida, aparece "Visto por Ana, Beto" embaixo dela, com as fotinhos de quem leu. É guardado só o horário da última mensagem lida por canal. Em Meu perfil dá para desligar: desligada, o seu app não avisa que você leu e também não mostra a leitura dos outros. Quem hospeda a sala vê esses horários, como vê o resto dos metadados.
