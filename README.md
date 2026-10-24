@@ -252,3 +252,7 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 
 - **Enquetes**: botão de gráfico ao lado do campo de mensagem. Pergunta, de 2 a 6 opções e, se quiser, "mais de uma resposta". Clique numa opção para votar (clique de novo para tirar o voto); passe o mouse para ver quem votou. Quem criou (ou o dono/moderador) pode encerrar. A enquete em si é assinada como qualquer mensagem; **os votos não são assinados**, então quem hospeda a sala poderia, tecnicamente, alterar a contagem.
 - **Soundboard**: na chamada, o botão de alto-falante toca um som para todo mundo (buzina, tambor, palmas, trombone triste, sirene, sino, laser, tada). Só o id do som viaja pela rede; cada computador sintetiza o som localmente, então não há arquivos nem uso de dados. Intervalo de 1,5 s entre sons; dá para desligar e ajustar o volume em Configurações de voz. Sons enviados pelos próprios usuários ainda não existem.
+
+## v0.19.0
+
+- **Zoom na tela compartilhada**: role o mouse sobre a tela de alguém para aproximar (até 8x, na direção do cursor), arraste para mover a imagem, dê duplo clique ou clique em "% ✕" para voltar ao normal. Arrastar não troca o foco do quadro.

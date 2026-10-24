@@ -594,3 +594,10 @@ a { color: var(--concordo-violet-light); }
 .sb-opt { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
 .sb-opt:hover { border-color: var(--accent); background: var(--panel); }
 .sb-emoji { font-size: 20px; }
+
+/* v0.19: zoom na tela compartilhada */
+.tile.screen.zoomed { cursor: grab; }
+.tile.screen.zoomed:active { cursor: grabbing; }
+.tile-zoom { position: absolute; left: 8px; top: 8px; z-index: 3; border: 0; border-radius: 6px; padding: 2px 8px; font-size: 12px; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; }
+.tile-zoom[hidden] { display: none; }
+.tile video { transform-origin: 0 0; will-change: transform; }

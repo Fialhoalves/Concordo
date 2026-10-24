@@ -3191,6 +3191,7 @@
     const video = h('video', { autoplay: true, playsinline: true, muted: true });
     video.muted = true;
     tile = h('div', { class: 'tile', 'data-key': key, onclick: () => {
+      if (tile._dragged) { tile._dragged = false; return; }
       v.focus = v.focus === key ? null : key;
       renderStage();
     } },
@@ -3215,8 +3216,73 @@
           e.stopPropagation();
           if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
         } }, ico('maximize', 16))));
+    enableZoom(tile, video);
     v.tiles.set(key, tile);
     return tile;
+  }
+
+  // Zoom (roda do mouse), mover (arrastar) e voltar ao normal (duplo clique) na tela compartilhada.
+  function enableZoom(tile, video) {
+    const view = { s: 1, x: 0, y: 0 };
+    const MAX = 8;
+    const badge = h('button', { class: 'tile-zoom', hidden: true, title: 'Voltar ao tamanho normal', 'aria-label': 'Voltar ao tamanho normal', onclick: (e) => {
+      e.stopPropagation();
+      reset();
+    } });
+    tile.querySelector('.tile-tools').before(badge);
+    const apply = () => {
+      const { width: w, height: h2 } = tile.getBoundingClientRect();
+      view.x = Math.min(0, Math.max(w * (1 - view.s), view.x));
+      view.y = Math.min(0, Math.max(h2 * (1 - view.s), view.y));
+      video.style.transformOrigin = '0 0';
+      video.style.transform = view.s === 1 ? '' : `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+      badge.hidden = view.s === 1;
+      badge.textContent = Math.round(view.s * 100) + '% ✕';
+      tile.classList.toggle('zoomed', view.s > 1);
+    };
+    const reset = () => {
+      view.s = 1; view.x = 0; view.y = 0;
+      apply();
+    };
+    tile.addEventListener('wheel', (e) => {
+      if (tile.dataset.kind !== 'screen') return;
+      e.preventDefault();
+      const r = tile.getBoundingClientRect();
+      const px = e.clientX - r.left, py = e.clientY - r.top;
+      const ns = Math.min(MAX, Math.max(1, view.s * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      view.x = px - (px - view.x) * (ns / view.s);
+      view.y = py - (py - view.y) * (ns / view.s);
+      view.s = ns <= 1.02 ? 1 : ns;
+      apply();
+    }, { passive: false });
+    let drag = null;
+    tile.addEventListener('pointerdown', (e) => {
+      if (view.s === 1 || e.button !== 0 || e.target.closest('button')) return;
+      drag = { px: e.clientX, py: e.clientY, x: view.x, y: view.y, moved: false };
+      tile.setPointerCapture(e.pointerId);
+    });
+    tile.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.px, dy = e.clientY - drag.py;
+      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      drag.moved = true;
+      view.x = drag.x + dx;
+      view.y = drag.y + dy;
+      apply();
+    });
+    const end = () => {
+      if (drag && drag.moved) tile._dragged = true;
+      drag = null;
+    };
+    tile.addEventListener('pointerup', end);
+    tile.addEventListener('pointercancel', end);
+    tile.addEventListener('dblclick', (e) => {
+      if (e.target.closest('button') || view.s === 1) return;
+      reset();
+    });
+    document.addEventListener('fullscreenchange', reset);
+    window.addEventListener('resize', () => view.s > 1 && apply());
+    tile._resetZoom = reset;
   }
 
   function fillTile(tile, { id, kind, stream, conn, entry }) {
