@@ -202,3 +202,44 @@ test('confirmação de leitura: só sobe, vai para quem vê o canal e entra no /
   wa.close();
   wb.close();
 });
+
+test('sons personalizados: valida o áudio, limita por pessoa, toca na chamada e só quem pode apaga', async () => {
+  const a = await joinAs('Rui');
+  const b = await joinAs('Zeca');
+  const wav = Buffer.concat([Buffer.from('RIFF'), Buffer.from([36, 0, 0, 0]), Buffer.from('WAVEfmt '), Buffer.alloc(40)]);
+  const up = (token, body, q = 'name=Aplauso&emoji=%F0%9F%91%8F') =>
+    fetch(`${srv.localUrl}/api/sounds?${q}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body });
+  assert.equal((await up(a.token, Buffer.from('isto não é áudio de jeito nenhum'))).status, 400);
+  assert.equal((await up(a.token, Buffer.concat([wav, Buffer.alloc(210 * 1024)]))).status, 413);
+  const ok = await up(a.token, wav);
+  assert.equal(ok.status, 201);
+  const { id } = await ok.json();
+  const st = await call(b.token, 'GET', '/api/state');
+  const snd = st.json.sounds.find((s) => s.id === id);
+  assert.equal(snd.name, 'Aplauso');
+  const audio = await fetch(`${srv.localUrl}/api/sounds/${id}/audio`, { headers: { Authorization: `Bearer ${b.token}` } });
+  assert.equal(audio.status, 200);
+  assert.equal(Buffer.from(await audio.arrayBuffer()).length, wav.length);
+  assert.equal((await up(a.token, wav)).status, 201);
+  assert.equal((await up(a.token, wav)).status, 201);
+  assert.equal((await up(a.token, wav)).status, 409, 'membro tem no máximo 3');
+  // toca na chamada: o relay aceita o id personalizado e rejeita um inexistente
+  const wa = await connect(a.token);
+  const wb = await connect(b.token);
+  wa.send(JSON.stringify({ t: 'voice_join', channel: 'voz' }));
+  wb.send(JSON.stringify({ t: 'voice_join', channel: 'voz' }));
+  await waitFor(() => wb.events.find((e) => e.t === 'voice_joined'));
+  wa.send(JSON.stringify({ t: 'soundboard', id: 'c-0000000000000000' }));
+  wa.send(JSON.stringify({ t: 'soundboard', id: 'c-' + id }));
+  const got = await waitFor(() => wb.events.find((e) => e.t === 'soundboard' && e.id === 'c-' + id));
+  assert.equal(got.from, a.id);
+  assert.ok(!wb.events.some((e) => e.t === 'soundboard' && e.id === 'c-0000000000000000'));
+  // apagar
+  assert.equal((await call(b.token, 'DELETE', `/api/sounds/${id}`)).status, 403);
+  const del = await call(srv.owner.token, 'DELETE', `/api/sounds/${id}`);
+  assert.equal(del.status, 200);
+  assert.ok(!(await call(b.token, 'GET', '/api/state')).json.sounds.some((s) => s.id === id));
+  assert.equal((await fetch(`${srv.localUrl}/api/sounds/${id}/audio`, { headers: { Authorization: `Bearer ${b.token}` } })).status, 404);
+  wa.close();
+  wb.close();
+});

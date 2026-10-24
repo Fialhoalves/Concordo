@@ -58,6 +58,29 @@ function sendJson(res, status, body) {
   res.end(data);
 }
 
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size <= limit) chunks.push(c); // passou do limite: continua lendo (e descartando) para a resposta chegar
+    });
+    req.on('end', () => (size > limit ? reject(httpError(413, `som grande demais (máximo ${Math.floor(limit / 1024)} KB)`)) : resolve(Buffer.concat(chunks))));
+    req.on('error', reject);
+  });
+}
+
+// só aceita áudio de verdade (confere os primeiros bytes), nunca pelo nome do arquivo
+function audioType(b) {
+  if (b.length < 12) return null;
+  if (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WAVE') return 'audio/wav';
+  if (b.toString('latin1', 0, 4) === 'OggS') return 'audio/ogg';
+  if (b.toString('latin1', 0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
+  return null;
+}
+const MAX_SOUND_BYTES = 200 * 1024;
+
 function readJson(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -355,6 +378,7 @@ async function createConcordoServer(opts = {}) {
         ice: iceServers,
         heir: (store.getHeir() || {}).id || null,
         succession: store.succession(),
+        sounds: store.listSounds(),
         reads: store.readsFor(user.id),
       });
     }
@@ -624,6 +648,35 @@ async function createConcordoServer(opts = {}) {
       return sendJson(res, 200, { ok: true });
     }
 
+    if (method === 'POST' && p === '/api/sounds') {
+      const buf = await readRaw(req, MAX_SOUND_BYTES);
+      const type = audioType(buf);
+      if (!type) throw httpError(400, 'envie um áudio WAV, MP3 ou OGG');
+      const fileId = crypto.randomBytes(12).toString('hex');
+      const name = url.searchParams.get('name') || 'som';
+      const meta = { id: fileId, name: cleanFileName(name), size: buf.length, type, uploader: user.id, ts: Date.now() };
+      const id = store.addSound({ user, name, emoji: url.searchParams.get('emoji'), meta });
+      if (id === 'room-full') throw httpError(409, 'a sala já tem o máximo de sons personalizados');
+      if (id === 'user-full') throw httpError(409, 'você já tem o máximo de sons; apague um para enviar outro');
+      fs.writeFileSync(path.join(store.uploadsDir, fileId), buf);
+      broadcast({ t: 'sounds', sounds: store.listSounds() });
+      return sendJson(res, 201, { id, sounds: store.listSounds() });
+    }
+
+    m = p.match(/^\/api\/sounds\/([a-f0-9]{16})(\/audio)?$/);
+    if (m && method === 'GET' && m[2]) {
+      const s = (store.state.sounds || {})[m[1]];
+      if (!s) throw httpError(404, 'som não encontrado');
+      return handleDownload(res, s.file);
+    }
+    if (m && method === 'DELETE' && !m[2]) {
+      const r = store.removeSound(m[1], user);
+      if (r === null) throw httpError(404, 'som não encontrado');
+      if (r === 'forbidden') throw httpError(403, 'só quem enviou, o dono ou um moderador pode apagar');
+      broadcast({ t: 'sounds', sounds: store.listSounds() });
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (method === 'POST' && p === '/api/dms') {
       const body = await readJson(req);
       const other = store.getUser(String(body.userId || ''));
@@ -810,7 +863,7 @@ async function createConcordoServer(opts = {}) {
 
       if (data.t === 'soundboard') {
         const me = voice.get(user.id);
-        if (!me || me.ws !== ws || !Soundboard.isValid(data.id)) return;
+        if (!me || me.ws !== ws || !(Soundboard.isValid(data.id) || (typeof data.id === 'string' && data.id.startsWith('c-') && store.hasSound(data.id.slice(2))))) return;
         const now = Date.now();
         if (now - (me.lastSound || 0) < 1500) return;
         me.lastSound = now;

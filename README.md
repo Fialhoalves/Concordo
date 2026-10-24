@@ -260,3 +260,7 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 ## v0.20.0
 
 - **Confirmação de leitura**: quando a sua última mensagem do canal (ou da conversa direta) já foi lida, aparece "Visto por Ana, Beto" embaixo dela, com as fotinhos de quem leu. É guardado só o horário da última mensagem lida por canal. Em Meu perfil dá para desligar: desligada, o seu app não avisa que você leu e também não mostra a leitura dos outros. Quem hospeda a sala vê esses horários, como vê o resto dos metadados.
+
+## v0.21.0
+
+- **Sons personalizados**: no soundboard, "＋ Adicionar som" envia um WAV, MP3 ou OGG de até 6 segundos e 200 KB para a sala (até 3 por pessoa e 12 por sala; dono e moderadores não têm o limite por pessoa). O som aparece na seção "Da sala" para todos tocarem na chamada. Quem enviou, o dono ou um moderador pode apagar. O servidor confere que o arquivo é mesmo um áudio e cada app baixa o som uma única vez.

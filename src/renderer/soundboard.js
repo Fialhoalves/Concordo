@@ -99,6 +99,34 @@
     },
   };
 
+  // sons enviados pelo pessoal da sala: baixa uma vez, decodifica e guarda; toca no máximo 6 s
+  const custom = new Map();
+  const MAX_SECONDS = 6;
+  async function playCustom(id, load) {
+    if (!enabled()) return;
+    try {
+      audio();
+      if (!custom.has(id)) custom.set(id, load().then((bytes) => ctx.decodeAudioData(bytes)));
+      const buf = await custom.get(id);
+      const src = ctx.createBufferSource();
+      const master = ctx.createGain();
+      const v = volume();
+      master.gain.value = Math.min(1, 1.2 * v * v);
+      src.buffer = buf;
+      src.connect(master).connect(ctx.destination);
+      src.start();
+      src.stop(ctx.currentTime + MAX_SECONDS);
+    } catch {
+      custom.delete(id);
+    }
+  }
+  async function inspect(bytes) {
+    audio();
+    const buf = await ctx.decodeAudioData(bytes.slice(0));
+    return buf.duration;
+  }
+  const forget = (id) => custom.delete(id);
+
   function play(id) {
     const clip = CLIPS[id];
     if (!clip || !enabled()) return;
@@ -114,5 +142,5 @@
     }
   }
 
-  window.ConcordoSoundboard = { play, ids: Object.keys(CLIPS) };
+  window.ConcordoSoundboard = { play, playCustom, inspect, forget, MAX_SECONDS, ids: Object.keys(CLIPS) };
 })();

@@ -605,3 +605,14 @@ a { color: var(--concordo-violet-light); }
 /* v0.20: confirmação de leitura */
 .seen { display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 2px 16px 6px; font-size: 11px; color: var(--muted); }
 .seen .avatar { width: 16px; height: 16px; font-size: 9px; }
+
+/* v0.21: sons personalizados */
+.sb-picker { max-height: 70vh; overflow-y: auto; }
+.sb-sep { grid-column: 1 / -1; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
+.sb-custom { position: relative; display: flex; }
+.sb-custom .sb-opt { flex: 1; min-width: 0; }
+.sb-custom .sb-opt span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-del { position: absolute; top: 2px; right: 2px; border: 0; background: rgba(0,0,0,.45); color: #fff; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; cursor: pointer; opacity: 0; }
+.sb-custom:hover .sb-del, .sb-del:focus-visible { opacity: 1; }
+.sb-add { grid-column: 1 / -1; padding: 8px; border: 1px dashed var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.sb-add:disabled { opacity: .5; cursor: not-allowed; }

@@ -324,6 +324,7 @@
     hostedList: [], // salas que eu hospedo: { roomId, name, running, info }
     unread: new Map(),
     reads: {},
+    sounds: [],
     away: 0, // mensagens recebidas com a janela sem foco (canal aberto)
     ws: null,
     retry: 0,
@@ -1377,6 +1378,7 @@
     S.ice = st.ice || [];
     S.heir = st.heir || null;
     S.reads = st.reads || {};
+    S.sounds = st.sounds || [];
     S.sentRead = new Map();
     S.succession = st.succession || [];
     S.voice.rooms = st.voice || {};
@@ -2291,6 +2293,66 @@
     });
   }
 
+  async function loadSound(id) {
+    const res = await fetch(`${S.session.url}/api/sounds/${id}/audio`, { headers: { Authorization: 'Bearer ' + S.session.token } });
+    if (!res.ok) throw new Error('som indisponível');
+    const bytes = await res.arrayBuffer();
+    if (Meter && !isLocalUrl(S.session.url)) Meter.add('chat', 'down', bytes.byteLength);
+    return bytes;
+  }
+
+  function openSoundUpload() {
+    const file = h('input', { type: 'file', accept: 'audio/wav,audio/mpeg,audio/ogg,.wav,.mp3,.ogg', 'data-role': 'sound-file', hidden: true });
+    const name = h('input', { class: 'input', maxlength: '20', placeholder: 'Nome do som (ex.: Aplauso)', 'data-role': 'sound-name' });
+    const emoji = h('input', { class: 'input', maxlength: '4', placeholder: '🔊', style: { width: '70px' }, 'data-role': 'sound-emoji' });
+    const info = h('p', { class: 'hint' }, 'Escolha um arquivo WAV, MP3 ou OGG de até 6 segundos e 200 KB. Todo mundo na sala poderá tocá-lo na chamada.');
+    const send = h('button', { class: 'btn primary', 'data-act': 'sound-send', disabled: true }, 'Enviar som');
+    let bytes = null;
+    file.addEventListener('change', async () => {
+      bytes = null;
+      send.disabled = true;
+      const f = file.files[0];
+      if (!f) return;
+      if (f.size > 200 * 1024) return void (info.textContent = 'Esse arquivo passa de 200 KB. Escolha um mais curto.');
+      try {
+        const buf = await f.arrayBuffer();
+        const secs = await window.ConcordoSoundboard.inspect(buf);
+        if (secs > window.ConcordoSoundboard.MAX_SECONDS) return void (info.textContent = `Esse som tem ${secs.toFixed(1)} s; o máximo é ${window.ConcordoSoundboard.MAX_SECONDS} s.`);
+        bytes = buf;
+        if (!name.value) name.value = f.name.replace(/\.[^.]+$/, '').slice(0, 20);
+        info.textContent = `Pronto: ${secs.toFixed(1)} s, ${Math.ceil(f.size / 1024)} KB.`;
+        send.disabled = false;
+      } catch {
+        info.textContent = 'Não consegui ler esse áudio. Tente um WAV, MP3 ou OGG.';
+      }
+    });
+    send.addEventListener('click', async () => {
+      if (!bytes) return;
+      send.disabled = true;
+      try {
+        const res = await fetch(`${S.session.url}/api/sounds?name=${encodeURIComponent(name.value || 'som')}&emoji=${encodeURIComponent(emoji.value)}`, {
+          method: 'POST', headers: { Authorization: 'Bearer ' + S.session.token, 'Content-Type': 'application/octet-stream' }, body: bytes,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `erro ${res.status}`);
+        if (Meter && !isLocalUrl(S.session.url)) Meter.add('chat', 'up', bytes.byteLength);
+        S.sounds = data.sounds || S.sounds;
+        close();
+        toast('Som adicionado ao soundboard.');
+      } catch (e) {
+        send.disabled = false;
+        toast(e.message, 'error');
+      }
+    });
+    const close = modal([
+      h('h3', null, 'Novo som'),
+      h('div', { class: 'field' }, h('label', null, 'Arquivo'), h('button', { class: 'btn small', type: 'button', 'data-act': 'sound-pick', onclick: () => file.click() }, 'Escolher arquivo'), file),
+      h('div', { class: 'field' }, h('label', null, 'Nome e emoji'), h('div', { class: 'row' }, name, emoji)),
+      info,
+      h('div', { class: 'row end' }, h('button', { class: 'btn', onclick: () => close() }, 'Cancelar'), send),
+    ]);
+  }
+
   function openSoundboard(anchor) {
     document.querySelectorAll('.sb-picker').forEach((n) => n.remove());
     const close = () => {
@@ -2298,14 +2360,36 @@
       document.removeEventListener('mousedown', outside, true);
       document.removeEventListener('keydown', esc, true);
     };
+    const play = (id) => {
+      wsSend({ t: 'soundboard', id });
+      close();
+    };
+    const me = S.session.user;
+    const canDelete = (snd) => snd.userId === me.id || me.role === 'owner' || (me.role === 'mod' && ((S.users.get(snd.userId) || {}).role || 'member') === 'member');
+    const mine = S.sounds.filter((x) => x.userId === me.id).length;
+    const full = S.sounds.length >= 12 || (me.role === 'member' && mine >= 3);
     const pop = h('div', { class: 'sb-picker', role: 'dialog', 'aria-label': 'Soundboard' },
       ...window.ConcordoSoundboardList.CLIPS.map((c) => h('button', {
-        class: 'sb-opt', type: 'button', 'data-sound': c.id, title: c.label,
-        onclick: () => {
-          wsSend({ t: 'soundboard', id: c.id });
-          close();
-        },
-      }, h('span', { class: 'sb-emoji' }, c.emoji), h('span', null, c.label))));
+        class: 'sb-opt', type: 'button', 'data-sound': c.id, title: c.label, onclick: () => play(c.id),
+      }, h('span', { class: 'sb-emoji' }, c.emoji), h('span', null, c.label))),
+      ...(S.sounds.length ? [h('div', { class: 'sb-sep' }, 'Da sala')] : []),
+      ...S.sounds.map((snd) => h('div', { class: 'sb-custom' },
+        h('button', { class: 'sb-opt', type: 'button', 'data-sound': 'c-' + snd.id, title: `${snd.name} (enviado por ${nameOf(snd.userId)})`, onclick: () => play('c-' + snd.id) },
+          h('span', { class: 'sb-emoji' }, snd.emoji), h('span', null, snd.name)),
+        canDelete(snd) ? h('button', { class: 'sb-del', type: 'button', 'data-act': 'sound-delete', title: 'Apagar este som', 'aria-label': 'Apagar este som', onclick: async (e) => {
+          e.stopPropagation();
+          try {
+            await api('DELETE', `/api/sounds/${snd.id}`);
+            window.ConcordoSoundboard.forget('c-' + snd.id);
+            close();
+          } catch (err) {
+            toast(err.message, 'error');
+          }
+        } }, '✕') : null)),
+      h('button', { class: 'sb-add', type: 'button', 'data-act': 'sound-add', disabled: full, title: full ? 'Limite de sons atingido: apague um para enviar outro' : 'Enviar um som seu (até 6 segundos, 200 KB: WAV, MP3 ou OGG)', onclick: () => {
+        close();
+        openSoundUpload();
+      } }, '＋ Adicionar som'));
     const outside = (ev) => {
       if (!pop.contains(ev.target) && !anchor.contains(ev.target)) close();
     };
@@ -2763,9 +2847,14 @@
         return onTyping(d);
       case 'soundboard': {
         const mutedUser = ((vprefs().users || {})[d.from] || {}).muted;
-        if (S.voice.client && !mutedUser && window.ConcordoSoundboard) window.ConcordoSoundboard.play(d.id);
+        if (!S.voice.client || mutedUser || !window.ConcordoSoundboard) return;
+        if (typeof d.id === 'string' && d.id.startsWith('c-')) window.ConcordoSoundboard.playCustom(d.id, () => loadSound(d.id.slice(2)));
+        else window.ConcordoSoundboard.play(d.id);
         return;
       }
+      case 'sounds':
+        S.sounds = d.sounds || [];
+        return;
       case 'live_react':
         return R.isValid(d.key) ? floatReaction(d.from, d.key) : undefined;
       case 'presence':

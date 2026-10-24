@@ -12,6 +12,8 @@ const rid = (bytes = 8) => crypto.randomBytes(bytes).toString('hex');
 
 const MAX_CHANNELS = 30;
 const CHANNEL_TYPES = ['text', 'voice', 'dm'];
+const MAX_SOUNDS = 12;
+const MAX_SOUNDS_PER_USER = 3;
 const ID12 = /^[a-f0-9]{12}$/;
 const MAX_DM_CIPHER = 20000; // texto cifrado (base64) é maior que o original
 
@@ -102,6 +104,8 @@ class Store {
       pins: {},
       votes: {}, // id da enquete -> { userId: { o: [índices], at } }
       pollClosed: {},
+      sounds: {}, // id -> { file, name, emoji, userId, at, size }
+      soundsGone: {},
       reads: {}, // canal -> { userId: ts da última mensagem lida }
       sigs: {}, // assinaturas de mensagens com arquivo (assinadas depois do envio)
       banned: {}, // hash da chave pública -> { name, at }
@@ -516,6 +520,14 @@ class Store {
       }
       if (!Object.keys(mine).length) delete st.votes[id];
     }
+    st.sounds = st.sounds || {};
+    st.soundsGone = st.soundsGone || {};
+    for (const id of Object.keys(own(other.soundsGone))) if (/^[a-f0-9]{16}$/.test(id)) st.soundsGone[id] = true;
+    for (const [id, snd] of Object.entries(own(other.sounds))) {
+      if (!/^[a-f0-9]{16}$/.test(id) || st.sounds[id] || st.soundsGone[id] || !snd || !/^[a-f0-9]{24}$/.test(snd.file) || !st.files[snd.file]) continue;
+      if (Object.keys(st.sounds).length >= MAX_SOUNDS) break;
+      st.sounds[id] = { file: snd.file, name: String(snd.name || 'som').slice(0, 20), emoji: String(snd.emoji || '🔊').slice(0, 8), userId: String(snd.userId || ''), at: Number(snd.at) || Date.now(), size: Number(snd.size) || 0 };
+    }
     st.reads = st.reads || {};
     for (const [ch, byUser] of Object.entries(own(other.reads))) {
       if (!/^[a-z0-9_-]{1,80}$/.test(ch)) continue;
@@ -826,6 +838,55 @@ class Store {
     return this.decorate(m);
   }
 
+  // ---- sons personalizados do soundboard ----
+  listSounds() {
+    return Object.entries(this.state.sounds || {})
+      .map(([id, s]) => ({ id, name: s.name, emoji: s.emoji, userId: s.userId, at: s.at }))
+      .sort((a, b) => a.at - b.at);
+  }
+
+  hasSound(id) {
+    return !!(this.state.sounds || {})[id];
+  }
+
+  addSound({ user, name, emoji, meta }) {
+    this.state.sounds = this.state.sounds || {};
+    const all = Object.values(this.state.sounds);
+    if (all.length >= MAX_SOUNDS) return 'room-full';
+    const mine = all.filter((s) => s.userId === user.id).length;
+    if (mine >= (user.role === 'member' ? MAX_SOUNDS_PER_USER : MAX_SOUNDS)) return 'user-full';
+    const id = rid(8);
+    this.state.files[meta.id] = meta;
+    this.state.sounds[id] = {
+      file: meta.id,
+      name: String(name || 'som').replace(/\s+/g, ' ').trim().slice(0, 20) || 'som',
+      emoji: String(emoji || '').trim().slice(0, 8) || '🔊',
+      userId: user.id,
+      at: Date.now(),
+      size: meta.size,
+    };
+    this.save();
+    return id;
+  }
+
+  removeSound(id, user) {
+    const s = (this.state.sounds || {})[id];
+    if (!s) return null;
+    const author = this.state.users[s.userId];
+    const may = s.userId === user.id || user.role === 'owner' || (user.role === 'mod' && (!author || author.role === 'member'));
+    if (!may) return 'forbidden';
+    delete this.state.sounds[id];
+    this.state.soundsGone[id] = true;
+    delete this.state.files[s.file];
+    try {
+      fs.rmSync(path.join(this.uploadsDir, s.file), { force: true });
+    } catch {
+      /* já não existia */
+    }
+    this.save();
+    return true;
+  }
+
   // confirmação de leitura: só sobe (nunca volta atrás) e nunca fica no futuro
   setRead(userId, channel, ts) {
     ts = Number(ts);
@@ -951,4 +1012,4 @@ class Store {
   }
 }
 
-module.exports = { Store, slugChannel, rid, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER };
+module.exports = { MAX_SOUNDS, MAX_SOUNDS_PER_USER, Store, slugChannel, rid, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER };
