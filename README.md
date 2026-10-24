@@ -230,3 +230,10 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Aparência** (Configurações): cor de destaque, tamanho do texto e densidade das mensagens. Valem só neste computador.
 - **Silenciar canal**: o sino ao lado do canal tira o contador e o som dele (menções a você ainda avisam). Guardado por sala, neste computador.
 - Ficaram para depois: ícone e faixa da sala, emojis personalizados.
+
+## v0.16.0
+
+- **Formatação nas mensagens**: `**negrito**`, `*itálico*`, `~~riscado~~`, `` `código` ``, blocos de código com três crases e citação com `> `. Tudo é montado sem HTML (o que alguém digitar com `<tags>` aparece como texto). Links e @menções continuam funcionando.
+- **Linha de "Novas mensagens"** ao entrar num canal com mensagens que você ainda não viu, e também quando chegam com a janela sem foco. **Botão direito no canal** marca como lido.
+- **Rascunho por canal**: o que você estava digitando fica guardado ao trocar de canal (inclusive ao reabrir o app) e some ao enviar.
+- Colar imagem (Ctrl+V) já funcionava desde antes: a imagem é enviada como anexo.

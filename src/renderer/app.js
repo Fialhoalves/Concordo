@@ -1125,6 +1125,7 @@
     S.retry = 0;
     S.msgs = new Map();
     S.unread = new Map();
+    S.newSince = new Map();
     S.current = null;
     buildChatDom();
     try {
@@ -1164,7 +1165,13 @@
         const row = h('div', {
           class: 'channel' + (ch.id === S.current ? ' active' : '') + (isVoice ? ' voice' : ''),
           'data-channel': ch.id,
+          title: isVoice ? undefined : 'Botão direito: marcar como lido',
           onclick: () => selectChannel(ch.id),
+          oncontextmenu: isVoice ? undefined : (e) => {
+            e.preventDefault();
+            markChannelRead(ch.id);
+            toast(`#${ch.name} marcado como lido.`, 'ok');
+          },
         }, h('span', { class: 'hash' }, ico(isVoice ? 'voice' : 'channels', 18)), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null,
           isVoice ? null : h('button', { class: 'mute-btn', type: 'button', 'data-act': 'mute-channel', title: isMuted(ch.id) ? 'Reativar avisos deste canal' : 'Silenciar este canal', 'aria-label': 'Silenciar canal', onclick: (e) => { e.stopPropagation(); toggleMuteChannel(ch.id); } }, ico('notifications', 14)));
         if (!isVoice && isMuted(ch.id)) row.classList.add('muted');
@@ -1240,7 +1247,46 @@
     }
   }
 
+  // Lido/não lido e rascunhos por canal (por sala, neste computador).
+  const roomLS = (key) => (LS.get(key, {}) || {})[mutedKey()] || {};
+  const setRoomLS = (key, obj) => {
+    const all = LS.get(key, {}) || {};
+    all[mutedKey()] = obj;
+    LS.set(key, all);
+  };
+  const lastRead = (ch) => Number(roomLS('concordo.lastRead')[ch]) || 0;
+  function markRead(ch) {
+    const entry = S.msgs.get(ch);
+    if (!entry || !entry.list.length) return;
+    const ts = entry.list[entry.list.length - 1].ts;
+    if (ts > lastRead(ch)) setRoomLS('concordo.lastRead', { ...roomLS('concordo.lastRead'), [ch]: ts });
+  }
+  function markChannelRead(ch) {
+    S.unread.delete(ch);
+    markRead(ch);
+    renderChannels();
+    updateBadge();
+  }
+  function saveDraft(ch) {
+    if (!ch || !S.ui.textarea) return;
+    const cur = roomLS('concordo.drafts');
+    const text = S.ui.textarea.value;
+    if (text.trim()) cur[ch] = text;
+    else delete cur[ch];
+    setRoomLS('concordo.drafts', cur);
+  }
+  function restoreDraft(ch) {
+    if (!S.ui.textarea) return;
+    S.ui.textarea.value = roomLS('concordo.drafts')[ch] || '';
+    autosize();
+  }
+
   async function selectChannel(id) {
+    const prevChannel = S.current;
+    const prevIsText = (S.channels.find((c) => c.id === prevChannel) || {}).type !== 'voice';
+    if (prevChannel && prevIsText && prevChannel !== id) saveDraft(prevChannel);
+    if (!S.newSince) S.newSince = new Map();
+    if (prevChannel !== id) S.newSince.set(id, lastRead(id));
     S.current = id;
     S.unread.delete(id);
     updateBadge();
@@ -1255,6 +1301,7 @@
     }
     S.ui.messages.replaceChildren();
     renderTyping();
+    if (prevChannel !== id) restoreDraft(id);
     if (S.msgs.has(id) && !S.msgs.get(id).partial) renderMessages();
     else {
       try {
@@ -1263,6 +1310,7 @@
         toast(e.message, 'error');
       }
     }
+    if (S.current === id && document.hasFocus()) markRead(id);
     if (S.ui.textarea) S.ui.textarea.focus();
   }
 
@@ -1296,7 +1344,14 @@
     if (entry.hasMore) nodes.push(h('button', { class: 'btn small load-older', onclick: loadOlder }, 'Carregar mensagens anteriores'));
     if (!entry.list.length) nodes.push(h('div', { class: 'empty' }, mascot('feliz', 96), h('div', null, 'Nada por aqui ainda. Mande a primeira mensagem!')));
     let prev = null;
+    const since = S.newSince && S.newSince.get(S.current);
+    let sepDone = !since;
     for (const m of entry.list) {
+      if (!sepDone && m.ts > since && m.userId !== S.session.user.id) {
+        nodes.push(h('div', { class: 'new-sep', 'data-role': 'new-sep' }, 'Novas mensagens'));
+        sepDone = true;
+        prev = null; // o agrupamento recomeça depois da linha
+      }
       nodes.push(...messageNodes(m, prev));
       prev = m;
     }
@@ -1340,6 +1395,67 @@
     return out;
   }
 
+  // Formatação estilo Markdown, montada com nós do DOM (nada de innerHTML): **negrito**, *itálico*, ~~riscado~~,
+  // `código`, ```bloco de código``` e linhas começando com "> " (citação). Links e @menções continuam funcionando.
+  function inlineFormat(text, depth = 0) {
+    const rules = [
+      { re: /`([^`\n]+)`/, tag: 'code', raw: true },
+      { re: /\*\*([^\n]+?)\*\*/, tag: 'strong' },
+      { re: /~~([^\n]+?)~~/, tag: 's' },
+      { re: /(^|[^\w*])\*([^\s*][^\n*]*?)\*(?![\w*])/, tag: 'em', group: 2, lead: true },
+      { re: /(^|[^\w])_([^\s_][^\n_]*?)_(?![\w])/, tag: 'em', group: 2, lead: true },
+    ];
+    let best = null;
+    for (const r of rules) {
+      const m = r.re.exec(text);
+      if (m && (!best || m.index < best.m.index)) best = { r, m };
+    }
+    if (!best || depth > 4) return richText(text);
+    const { r, m } = best;
+    const start = m.index + (r.lead ? m[1].length : 0);
+    const end = m.index + m[0].length;
+    const inner = m[r.group || 1];
+    return [
+      ...(start > 0 ? richText(text.slice(0, start)) : []),
+      h(r.tag, null, ...(r.raw ? [inner] : inlineFormat(inner, depth + 1))),
+      ...(end < text.length ? inlineFormat(text.slice(end), depth + 1) : []),
+    ];
+  }
+
+  function formatText(text) {
+    if (!/[`*_~>]/.test(text)) return richText(text);
+    const out = [];
+    const parts = text.split(/```/);
+    parts.forEach((part, i) => {
+      if (i % 2 === 1 && i < parts.length - 1) {
+        out.push(h('pre', { class: 'codeblock' }, h('code', null, part.replace(/^[a-z0-9+#-]*\n/i, '').replace(/^\n|\n$/g, ''))));
+        return;
+      }
+      let src = i % 2 === 1 ? '```' + part : part; // ``` sem fechar: mostra como texto
+      if (i > 0 && parts.length > 2) src = src.replace(/^\n/, ''); // sem linha em branco depois do bloco
+      if (i < parts.length - 1) src = src.replace(/\n$/, '');
+      if (!src) return;
+      const lines = src.split('\n');
+      let quote = [];
+      const flush = () => {
+        if (quote.length) out.push(h('blockquote', { class: 'quote' }, ...inlineFormat(quote.join('\n'))));
+        quote = [];
+      };
+      lines.forEach((line, n) => {
+        const q = /^> ?/.exec(line);
+        if (q) {
+          quote.push(line.slice(q[0].length));
+          return;
+        }
+        flush();
+        out.push(...inlineFormat(line));
+        if (n < lines.length - 1) out.push('\n');
+      });
+      flush();
+    });
+    return out;
+  }
+
   function msgElement(m, grouped) {
     const me = S.session.user;
     const user = S.users.get(m.userId);
@@ -1356,7 +1472,7 @@
         : null,
       m.deleted
         ? h('div', { class: 'text deleted' }, 'Mensagem apagada')
-        : (m.text ? h('div', { class: 'text' }, richText(m.text),
+        : (m.text ? h('div', { class: 'text' }, formatText(m.text),
           m.editedAt ? h('span', { class: 'edited', title: 'Editada às ' + hhmm(m.editedAt) }, ' (editada)') : null) : null),
       ...(m.deleted ? [] : (m.attachments || []).map(attachmentEl)),
       m.deleted ? null : reactionsEl(m));
@@ -1750,7 +1866,13 @@
     if (isNew) entry.list.push(m);
     const mine = m.userId === S.session.user.id;
     if (m.channel === S.current) {
-      if (isNew) appendMessage(m);
+      if (isNew) {
+        if (!mine && !document.hasFocus() && S.ui.messages && !S.ui.messages.querySelector('.new-sep')) {
+          S.ui.messages.append(h('div', { class: 'new-sep', 'data-role': 'new-sep' }, 'Novas mensagens'));
+        }
+        appendMessage(m);
+        if (document.hasFocus()) markRead(m.channel);
+      }
     } else if (!mine && (!isMuted(m.channel) || (m.mentions || []).includes(S.session.user.id))) {
       S.unread.set(m.channel, (S.unread.get(m.channel) || 0) + 1);
       renderChannels();
@@ -1848,6 +1970,7 @@
     cancelReply();
     closeMentionPop();
     S.ui.textarea.value = '';
+    saveDraft(S.current);
     autosize();
   }
 
@@ -3290,6 +3413,7 @@
     S.ui = {};
     S.msgs = new Map();
     S.unread = new Map();
+    S.newSince = new Map();
     S.away = 0;
     updateBadge();
   }
@@ -3427,6 +3551,7 @@
     startMeter();
     window.addEventListener('focus', () => {
       S.away = 0;
+      if (S.session && S.current) markRead(S.current);
       updateBadge();
     });
     // Outro computador já hospeda esta sala com uma geração mais nova: este deixa de ser host e entra como membro.

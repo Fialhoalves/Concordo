@@ -551,3 +551,11 @@ a { color: var(--concordo-violet-light); }
 :root[data-density="compact"] .channel, :root[data-density="compact"] .member { padding-top: 2px; padding-bottom: 2px; }
 :root[data-density="comfortable"] .msg { padding-top: 7px; padding-bottom: 7px; }
 :root[data-density="comfortable"] .channel, :root[data-density="comfortable"] .member { padding-top: 8px; padding-bottom: 8px; }
+
+/* v0.16: formatação, linha de novas mensagens */
+.text code { font-family: ui-monospace, Consolas, monospace; font-size: .92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.text pre.codeblock { margin: 4px 0; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; white-space: pre; }
+.text pre.codeblock code { background: none; border: 0; padding: 0; }
+.text blockquote.quote { margin: 2px 0; padding: 0 0 0 10px; border-left: 3px solid var(--line); color: var(--muted); white-space: pre-wrap; }
+.new-sep { display: flex; align-items: center; gap: 10px; color: var(--bad); font-size: 11px; font-weight: 700; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .04em; }
+.new-sep::before, .new-sep::after { content: ""; flex: 1; height: 1px; background: var(--bad); opacity: .6; }
