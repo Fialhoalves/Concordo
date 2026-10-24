@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Concordo: chat de amigos hospedado por um amigo</title>
+<meta name="description" content="Chat para grupos de amigos no Windows. Um amigo hospeda a sala no próprio PC, os outros entram por código de convite. Sem conta, sem servidor pago, sem anúncios. Grátis e de código aberto.">
+<meta name="theme-color" content="#0f111a">
+<meta property="og:title" content="Concordo: chat de amigos hospedado por um amigo">
+<meta property="og:description" content="Sua sala no PC de um amigo. Texto, voz, vídeo e tela. Sem conta, sem servidor pago, sem anúncios.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/svg+xml" href="assets/concordo-symbol.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#conteudo">Ir para o conteúdo</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Concordo, início"><img src="assets/concordo-symbol.svg" alt="" width="34" height="34">Concordo</a>
+    <nav aria-label="Principal">
+      <a class="hide-s" href="#como-funciona">Como funciona</a>
+      <a class="hide-s" href="#recursos">Recursos</a>
+      <a href="#privacidade">Privacidade</a>
+      <a href="#perguntas">Perguntas</a>
+    </nav>
+  </div>
+</header>
+
+<main id="conteudo">
+  <section class="hero" aria-labelledby="titulo">
+    <div class="wrap hero-grid">
+      <div>
+        <h1 id="titulo">A sala do grupo roda no PC de um amigo.</h1>
+        <p class="lede">O Concordo é um chat estilo Discord para o seu grupo de amigos no Windows. Um de vocês hospeda, os outros entram por um código de convite. Sem conta, sem servidor pago, sem anúncios.</p>
+        <div class="cta">
+          <a class="btn" href="https://github.com/Fialhoalves/Concordo/releases/latest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+            Baixar para Windows
+          </a>
+          <a class="link-plain" href="https://github.com/Fialhoalves/Concordo">Ver no GitHub</a>
+        </div>
+        <p class="fine">Grátis e de código aberto. Só para Windows por enquanto. O instalador não é assinado, então o Windows pode mostrar um aviso na primeira vez (<a href="#smartscreen">veja como seguir</a>).</p>
+      </div>
+
+      <div class="stage" role="img" aria-label="Maquete ilustrativa da interface do Concordo: lista de canais, conversa com uma enquete e uma chamada de voz em andamento. Não é uma captura de tela real.">
+        <img class="mascot" src="assets/acenando-grande.png" alt="" width="150" height="150">
+        <div class="mock" aria-hidden="true">
+          <div class="mock-side">
+            <b>Turma da laje</b>
+            <span class="on"># geral</span>
+            <span># jogos</span>
+            <span># fotos</span>
+            <span class="sep">Voz</span>
+            <span><span class="dot"></span>sala de voz</span>
+          </div>
+          <div class="mock-main">
+            <div class="mock-head"># geral</div>
+            <div class="msg"><div class="av a">L</div><div><b>Lia</b><small>20:41</small><p>Quem topa jogar hoje?</p></div></div>
+            <div class="msg"><div class="av b">T</div><div><b>Téo</b><small>20:42</small><p>Eu! Já abro a sala.</p>
+              <div class="poll"><i>Que horas?</i><div class="bar" style="--w:70%"><span>21h</span></div><div class="bar" style="--w:30%"><span>22h</span></div></div></div></div>
+            <div class="call"><span class="wave"><s></s><s></s><s></s><s></s></span>Na chamada: Lia, Téo</div>
+          </div>
+        </div>
+        <div class="invite" aria-hidden="true">Convite: <code>concordo://join/…</code></div>
+        <p class="caption">Maquete ilustrativa, não é uma captura de tela.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="como-funciona" aria-labelledby="t-como">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="t-como">Três passos e vocês estão conversando</h2>
+        <p class="lede">Não tem cadastro nem site para abrir. O app faz o trabalho de servidor no computador de quem hospeda.</p>
+      </div>
+      <ol class="steps">
+        <li>
+          <h3>Instale</h3>
+          <p>Baixe o instalador na página de versões do GitHub e execute. As atualizações depois chegam sozinhas.</p>
+        </li>
+        <li>
+          <h3>Hospede ou entre com um convite</h3>
+          <div class="sub">
+            <span><b>Quem hospeda:</b> clique em Hospedar, dê um nome à sala e gere um convite.</span>
+            <span><b>Quem entra:</b> clique em Entrar, cole o código e escolha um apelido.</span>
+          </div>
+        </li>
+        <li>
+          <h3>Converse</h3>
+          <p>Escreva nos canais, abra uma chamada de voz, ligue a câmera ou compartilhe a tela. Quem hospeda só precisa deixar o app aberto.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="recursos" aria-labelledby="t-rec">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="t-rec">O que dá para fazer na sala</h2>
+        <p class="lede">O que você espera de um chat de grupo, rodando entre vocês.</p>
+      </div>
+      <div class="features">
+        <div class="feat-group">
+          <h3>Conversar</h3>
+          <p>Canais de texto para cada assunto.</p>
+          <ul>
+            <li><b>Canais de texto</b> para separar o papo, os jogos e as fotos.</li>
+            <li><b>Formatação, reações e enquetes</b> para decidir o horário sem confusão.</li>
+            <li><b>Confirmação de leitura</b> para saber quem já viu.</li>
+            <li><b>Mensagens assinadas:</b> dá para conferir que foi mesmo aquela pessoa que escreveu.</li>
+            <li><b>Mensagens diretas</b> com criptografia de ponta a ponta.</li>
+          </ul>
+        </div>
+        <div class="feat-group">
+          <h3>Falar e ver</h3>
+          <p>Voz, vídeo e tela direto entre os amigos.</p>
+          <ul>
+            <li><b>Voz, vídeo e compartilhamento de tela</b> por WebRTC, sem passar por servidor de terceiros.</li>
+            <li><b>Zoom na tela compartilhada</b> para ler o que está pequeno.</li>
+            <li><b>Soundboard</b> com os sons da sala, para as piadas internas.</li>
+          </ul>
+        </div>
+        <div class="feat-group">
+          <h3>Organizar a sala</h3>
+          <p>Cada um no seu lugar.</p>
+          <ul>
+            <li><b>Papéis:</b> dono, moderador e membro.</li>
+            <li><b>Convites por código</b> para entrar sem criar conta.</li>
+          </ul>
+        </div>
+        <div class="feat-group">
+          <h3>Manter a sala de pé</h3>
+          <p>Para quando o PC do host precisa descansar.</p>
+          <ul>
+            <li><b>Troca automática de host:</b> se quem hospeda sumir, outro amigo assume a sala.</li>
+            <li><b>Atualização automática:</b> o app baixa a versão nova e avisa para reiniciar.</li>
+            <li><b>Grátis e de código aberto:</b> o código está no GitHub para quem quiser ler.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="privacidade" class="privacy" aria-labelledby="t-priv">
+    <div class="wrap priv-grid">
+      <div>
+        <div class="sec-head">
+          <h2 id="t-priv">Quem vê o quê</h2>
+          <p class="lede">Não tem empresa guardando suas conversas, mas isso não quer dizer que ninguém vê nada. Veja com clareza onde ficam as coisas.</p>
+        </div>
+        <dl class="who">
+          <div>
+            <dt>Quem hospeda</dt>
+            <dd>As mensagens dos canais e os arquivos ficam no computador do host, então ele consegue vê-los. Ele também enxerga os metadados: quem entrou, quando, e quem trocou mensagem direta com quem. Hospede e escolha host entre pessoas de confiança.</dd>
+          </div>
+          <div>
+            <dt>Mensagens diretas</dt>
+            <dd>Só quem conversa consegue ler. O conteúdo é cifrado de ponta a ponta e o host apenas repassa o texto cifrado.</dd>
+          </div>
+          <div>
+            <dt>Mensagens e votos</dt>
+            <dd>As mensagens dos canais são assinadas, o que ajuda a provar a autoria. Os votos das enquetes não são assinados.</dd>
+          </div>
+          <div>
+            <dt>Voz, vídeo e tela</dt>
+            <dd>Vão direto de um amigo para o outro. Em compensação, o endereço IP de cada pessoa fica visível para os outros da chamada.</dd>
+          </div>
+          <div>
+            <dt>No caminho</dt>
+            <dd>Para a sala ser alcançada de fora de casa, o app usa um túnel gratuito da Cloudflare, sem conta. O tráfego da sala passa por ele.</dd>
+          </div>
+        </dl>
+        <p class="priv-note">O Concordo foi feito para grupos pequenos de amigos de confiança. Não o use para segredos de alto risco.</p>
+      </div>
+      <img class="priv-art" src="assets/oculos.png" alt="Mascote do Concordo, um cachorro shiba de óculos" width="190" height="190">
+    </div>
+  </section>
+
+  <section id="perguntas" aria-labelledby="t-faq">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="t-faq">Perguntas frequentes</h2>
+      </div>
+      <div class="faq">
+        <details id="smartscreen">
+          <summary>O Windows avisou que o app é desconhecido. É seguro?</summary>
+          <div class="ans">
+            <p>O instalador não é assinado digitalmente, então o Windows SmartScreen mostra o aviso na primeira instalação. Isso não prova nada sobre o app, mas também é motivo para baixar só desta página ou do repositório oficial.</p>
+            <p>Para seguir, clique em <kbd>Mais informações</kbd> e depois em <kbd>Executar assim mesmo</kbd>. As atualizações seguintes não pedem isso de novo. O código é aberto, então você pode ler o que o app faz.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Quanto custa?</summary>
+          <div class="ans"><p>Nada. O Concordo é grátis e de código aberto, não tem anúncios e não precisa de conta. Como a sala roda no PC de um amigo, também não existe servidor para pagar.</p></div>
+        </details>
+        <details>
+          <summary>Quantos amigos cabem na sala?</summary>
+          <div class="ans">
+            <p>O Concordo é pensado para grupos pequenos. Nas chamadas de voz, vídeo e tela, cada pessoa envia para as outras diretamente, então o conforto cai conforme o grupo cresce: o limite é de 8 pessoas por canal de voz, mas o uso confortável é de 4 a 5, principalmente se alguém compartilha a tela.</p>
+          </div>
+        </details>
+        <details>
+          <summary>O que acontece se o host fechar o app?</summary>
+          <div class="ans">
+            <p>Se o app do host fechar ou o PC dele desligar, a sala fica fora do ar até alguém reabri-la. Por isso o host precisa deixar o Concordo aberto enquanto o grupo conversa.</p>
+            <p>Se ele sumir, outro amigo que tem uma cópia da sala pode assumir como novo host. O histórico fica com quem guardou a cópia, e mensagens dos últimos instantes antes da queda podem se perder. Dá para passar a sala para outro amigo antes de sair.</p>
+          </div>
+        </details>
+        <details>
+          <summary>Funciona em Mac, Linux ou celular?</summary>
+          <div class="ans"><p>Não. Por enquanto o Concordo é só para Windows.</p></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="final" aria-labelledby="t-fim">
+    <div class="wrap">
+      <img src="assets/feliz.png" alt="Mascote do Concordo sorrindo" width="120" height="120">
+      <div>
+        <h2 id="t-fim">Chame a turma.</h2>
+        <p>Instale, abra uma sala e mande o código. Em poucos minutos vocês estão na mesma conversa.</p>
+        <div class="cta">
+          <a class="btn" href="https://github.com/Fialhoalves/Concordo/releases/latest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16"/></svg>
+            Baixar para Windows
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Concordo é grátis e de código aberto.</span>
+    <ul>
+      <li><a href="https://github.com/Fialhoalves/Concordo">Código no GitHub</a></li>
+      <li><a href="https://github.com/Fialhoalves/Concordo/releases/latest">Última versão</a></li>
+      <li><a href="https://github.com/Fialhoalves/Concordo/issues">Relatar um problema</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>
