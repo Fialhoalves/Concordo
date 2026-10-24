@@ -155,7 +155,38 @@ class Store {
 
   // ---- usuários ----
   publicUser(u) {
-    return { id: u.id, name: u.name, role: u.role };
+    const out = { id: u.id, name: u.name, role: u.role };
+    if (u.color) out.color = u.color;
+    if (u.avatar) out.avatar = u.avatar;
+    if (u.status && u.status !== 'online') out.status = u.status;
+    if (u.statusText) out.statusText = u.statusText;
+    return out;
+  }
+
+  // Perfil: cor, avatar (imagem pequena), situação e frase. Valida tudo; campos ausentes ficam como estão.
+  setProfile(u, patch = {}) {
+    const bad = (m) => Object.assign(new Error(m), { profile: true });
+    if ('color' in patch) {
+      if (patch.color === null || patch.color === '') delete u.color;
+      else if (/^#[0-9a-fA-F]{6}$/.test(String(patch.color))) u.color = String(patch.color).toLowerCase();
+      else throw bad('cor inválida');
+    }
+    if ('status' in patch) {
+      if (!['online', 'away', 'dnd', 'invisible'].includes(patch.status)) throw bad('situação inválida');
+      u.status = patch.status;
+    }
+    if ('statusText' in patch) {
+      const t = String(patch.statusText || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (t) u.statusText = t;
+      else delete u.statusText;
+    }
+    if ('avatar' in patch) {
+      if (patch.avatar === null || patch.avatar === '') delete u.avatar;
+      else if (typeof patch.avatar === 'string' && patch.avatar.length <= 60000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(patch.avatar)) u.avatar = patch.avatar;
+      else throw bad('imagem inválida ou grande demais');
+    }
+    this.save();
+    return u;
   }
 
   users() {
@@ -330,6 +361,11 @@ class Store {
       const name = String(u.name || '').slice(0, 24).trim();
       if (!name || this.nameTaken(name)) continue;
       st.users[id] = { id, name, role: 'member', tokenHash: String(u.tokenHash), createdAt: Number(u.createdAt) || Date.now() };
+      try {
+        this.setProfile(st.users[id], { color: u.color || null, avatar: u.avatar || null, status: u.status || 'online', statusText: u.statusText || '' });
+      } catch {
+        /* perfil inválido na cópia: ignora */
+      }
       this.tokenIndex.set(st.users[id].tokenHash, id);
     }
     for (const c of Array.isArray(other.channels) ? other.channels : []) {

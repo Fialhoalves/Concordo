@@ -107,7 +107,8 @@ async function createConcordoServer(opts = {}) {
 
   const pub = (u) => store.publicUser(u);
   const clients = new Map(); // userId -> Set<WebSocket>
-  const online = () => [...clients.keys()];
+  // quem está invisível não aparece como online para os outros
+  const online = () => [...clients.keys()].filter((id) => !(store.getUser(id) && store.getUser(id).status === 'invisible'));
 
   function broadcast(payload) {
     const data = JSON.stringify(payload);
@@ -495,6 +496,20 @@ async function createConcordoServer(opts = {}) {
     if (method === 'GET' && p === '/api/session-code') {
       requireOwner(user);
       return sendJson(res, 200, { code: makeCode(null) });
+    }
+
+    if (method === 'PATCH' && p === '/api/me') {
+      const body = await readJson(req, 100 * 1024);
+      const patch = {};
+      for (const k of ['color', 'status', 'statusText', 'avatar']) if (k in body) patch[k] = body[k];
+      try {
+        store.setProfile(user, patch);
+      } catch (e) {
+        throw httpError(400, e.message);
+      }
+      broadcast({ t: 'user', user: pub(user) });
+      broadcast({ t: 'presence', online: online() });
+      return sendJson(res, 200, { user: pub(user) });
     }
 
     m = p.match(/^\/api\/users\/([a-f0-9]+)$/);

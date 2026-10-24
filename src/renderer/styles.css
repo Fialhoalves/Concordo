@@ -530,3 +530,24 @@ a { color: var(--concordo-violet-light); }
 .usage-table td { padding: 3px 6px; border-bottom: 1px solid var(--line); }
 .usage-table td:not(:first-child) { text-align: right; white-space: nowrap; }
 .usage-table tr.total td { font-weight: 600; }
+
+/* v0.15: perfil, situação, aparência */
+.avatar.xl { width: 72px; height: 72px; font-size: 30px; }
+.who-btn { display: flex; align-items: center; gap: 8px; background: none; border: 0; color: inherit; cursor: pointer; padding: 2px 4px; border-radius: 8px; min-width: 0; font: inherit; }
+.who-btn:hover { background: var(--panel-2); }
+.who-btn span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presence.away { background: var(--warn); }
+.presence.dnd { background: var(--bad); }
+.status-text { display: block; color: var(--muted); font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; color: #fff; font-weight: 700; font-size: 12px; }
+.swatch.on { border-color: var(--text); }
+.col { display: flex; flex-direction: column; gap: 6px; }
+.accent-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.channel .mute-btn { margin-left: auto; display: none; background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 2px; }
+.channel:hover .mute-btn, .channel.muted .mute-btn { display: inline-flex; }
+.channel.muted { opacity: .55; }
+:root[data-density="compact"] .msg { padding-top: 1px; padding-bottom: 1px; }
+:root[data-density="compact"] .channel, :root[data-density="compact"] .member { padding-top: 2px; padding-bottom: 2px; }
+:root[data-density="comfortable"] .msg { padding-top: 7px; padding-bottom: 7px; }
+:root[data-density="comfortable"] .channel, :root[data-density="comfortable"] .member { padding-top: 8px; padding-bottom: 8px; }

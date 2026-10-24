@@ -223,3 +223,10 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Apertar para falar**: em Configurações → Áudio, ligue "Apertar para falar" e escolha a tecla (padrão V). Com isso você entra na chamada mudo e o microfone só abre enquanto segura a tecla (com 0,25 s de folga ao soltar, para não cortar o fim da frase). Não dispara enquanto você digita num campo. Vale com a janela do Concordo em foco: ver teclas de outros programas exigiria um gancho nativo do Windows, que fica de fora por enquanto.
 - **Atalhos globais** (desligados por padrão, para não brigar com outros apps): Ctrl+Shift+M muta e Ctrl+Shift+D ensurdece mesmo com outro programa em primeiro plano.
 - **Tela compartilhada**: botão de janela flutuante (fica por cima de outros apps) e botão para alternar entre mostrar inteira e preencher o quadro. Tela cheia continua. Supressão de ruído e qualidade da tela (resolução, quadros, taxa) já existiam nas Configurações.
+
+## v0.15.0
+
+- **Meu perfil** (clique no seu nome, embaixo à esquerda): foto (reduzida para 96×96 antes de ir para a sala), cor do nome e do avatar, situação (online, ausente, não perturbe, invisível) e uma frase curta. Todos na sala veem; invisível aparece como offline para os outros; não perturbe silencia os sons de mensagem.
+- **Aparência** (Configurações): cor de destaque, tamanho do texto e densidade das mensagens. Valem só neste computador.
+- **Silenciar canal**: o sino ao lado do canal tira o contador e o som dele (menções a você ainda avisam). Guardado por sala, neste computador.
+- Ficaram para depois: ícone e faixa da sala, emojis personalizados.

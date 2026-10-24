@@ -99,12 +99,132 @@
     return PALETTE[n % PALETTE.length];
   }
 
+  // cor do usuário: a que ele escolheu ou uma derivada do id
+  function userColor(id) {
+    const u = S.users && S.users.get(id);
+    return (u && u.color) || colorFor(id);
+  }
+
   function avatar(id, name, { big = false, presence = false } = {}) {
+    const u = S.users && S.users.get(id);
     const initial = Array.from((name || '?').trim())[0] || '?';
     const el = h('div', { class: 'avatar' + (big ? ' big' : '') }, initial.toUpperCase());
-    el.style.background = colorFor(id);
-    if (presence) el.append(h('span', { class: 'presence' + (S.online.has(id) ? ' on' : ''), title: S.online.has(id) ? 'Online' : 'Offline' }));
+    el.style.background = userColor(id);
+    if (u && u.avatar) {
+      el.textContent = '';
+      el.style.backgroundImage = `url("${u.avatar}")`;
+      el.style.backgroundSize = 'cover';
+      el.style.backgroundPosition = 'center';
+    }
+    if (presence) {
+      const self = S.session && id === S.session.user.id;
+      const on = self ? !(u && u.status === 'invisible') : S.online.has(id);
+      const st = on && u && u.status && u.status !== 'invisible' ? ' ' + u.status : '';
+      const label = !on ? 'Offline' : u && u.status === 'away' ? 'Ausente' : u && u.status === 'dnd' ? 'Não perturbe' : 'Online';
+      el.append(h('span', { class: 'presence' + (on ? ' on' : '') + st, title: label }));
+    }
     return el;
+  }
+
+  function meButton() {
+    const me = S.session.user;
+    return h('button', { class: 'who-btn', 'data-act': 'profile', title: 'Meu perfil', onclick: openProfile },
+      avatar(me.id, me.name, { presence: true }), h('span', null, me.name));
+  }
+
+  function renderMeBar() {
+    const old = S.ui.meBar && S.ui.meBar.querySelector('.who-btn');
+    if (old) old.replaceWith(meButton());
+  }
+
+  // Perfil: foto, cor, situação e frase. A foto é reduzida para 96x96 antes de ir para a sala.
+  function resizeAvatar(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const c = document.createElement('canvas');
+        c.width = c.height = 96;
+        const side = Math.min(img.width, img.height);
+        c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 96, 96);
+        resolve(c.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Não consegui ler essa imagem.'));
+      };
+      img.src = url;
+    });
+  }
+
+  function openProfile() {
+    const me = S.session.user;
+    const draft = { color: me.color || null, avatar: me.avatar || null };
+    const preview = h('div', { class: 'profile-preview' });
+    const paint = () => {
+      const el = h('div', { class: 'avatar xl' }, Array.from(me.name.trim())[0].toUpperCase());
+      el.style.background = draft.color || colorFor(me.id);
+      if (draft.avatar) {
+        el.textContent = '';
+        el.style.backgroundImage = `url("${draft.avatar}")`;
+        el.style.backgroundSize = 'cover';
+        el.style.backgroundPosition = 'center';
+      }
+      preview.replaceChildren(el);
+    };
+    const file = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', hidden: true, 'data-role': 'avatar-file' });
+    file.addEventListener('change', async () => {
+      if (!file.files[0]) return;
+      try {
+        draft.avatar = await resizeAvatar(file.files[0]);
+        paint();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+      file.value = '';
+    });
+    const swatches = h('div', { class: 'swatches' });
+    const COLORS = [null, '#6d4aff', '#0e9f8e', '#c0457a', '#b7791f', '#2f6fdb', '#8b5cf6', '#0891b2', '#be4b4b', '#4d9a2f'];
+    const paintSwatches = () => {
+      swatches.replaceChildren(...COLORS.map((c) => {
+        const b = h('button', { type: 'button', class: 'swatch' + ((draft.color || null) === c ? ' on' : ''), title: c || 'Automática', 'aria-label': c || 'Cor automática', onclick: () => { draft.color = c; paintSwatches(); paint(); } });
+        b.style.background = c || colorFor(me.id);
+        if (!c) b.textContent = 'A';
+        return b;
+      }));
+    };
+    const status = h('select', { class: 'input', 'data-role': 'profile-status' },
+      h('option', { value: 'online' }, 'Online'),
+      h('option', { value: 'away' }, 'Ausente'),
+      h('option', { value: 'dnd' }, 'Não perturbe (sem sons)'),
+      h('option', { value: 'invisible' }, 'Invisível (aparece offline para os outros)'));
+    status.value = me.status || 'online';
+    const text = h('input', { class: 'input', maxlength: '60', placeholder: 'O que você está fazendo? (opcional)', 'data-role': 'profile-text' });
+    text.value = me.statusText || '';
+    paint();
+    paintSwatches();
+    const close = modal([
+      h('h3', null, 'Meu perfil'),
+      h('div', { class: 'row' }, preview,
+        h('div', { class: 'col' },
+          h('button', { class: 'btn small', type: 'button', onclick: () => file.click() }, 'Escolher foto'),
+          h('button', { class: 'btn small ghost', type: 'button', 'data-act': 'avatar-clear', onclick: () => { draft.avatar = null; paint(); } }, 'Remover foto'))),
+      file,
+      h('div', { class: 'field' }, h('label', null, 'Cor do seu nome e do avatar nesta sala'), swatches),
+      h('div', { class: 'field' }, h('label', null, 'Situação'), status),
+      h('div', { class: 'field' }, h('label', null, 'Frase de situação'), text),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', onclick: () => close() }, 'Cancelar'),
+        h('button', { class: 'btn primary', 'data-act': 'profile-save', onclick: async () => {
+          try {
+            await api('PATCH', '/api/me', { color: draft.color, avatar: draft.avatar, status: status.value, statusText: text.value });
+            close();
+          } catch (e) {
+            toast(e.message, 'error');
+          }
+        } }, 'Salvar')),
+    ]);
   }
 
   function hostOf(url) {
@@ -693,14 +813,14 @@
     });
 
     const me = S.session.user;
-    const meBar = h('div', { class: 'me-bar' },
-      h('div', { class: 'who' }, avatar(me.id, me.name), h('span', null, me.name),
+    const meBar = (S.ui.meBar = h('div', { class: 'me-bar' },
+      h('div', { class: 'who' }, meButton(),
         h('button', { class: 'btn ghost small', title: 'Áudio e vídeo', 'data-act': 'settings', onclick: openVoiceSettings, 'aria-label': 'Configurações' }, ico('settings', 18))),
       S.isHost
         ? h('div', { class: 'row' },
             ui.inviteBtn,
             h('button', { class: 'btn small danger', onclick: endRoom }, 'Encerrar'))
-        : h('div', { class: 'row' }, h('button', { class: 'btn small with-icon', onclick: () => leave() }, ico('log-out', 16), 'Sair da sala')));
+        : h('div', { class: 'row' }, h('button', { class: 'btn small with-icon', onclick: () => leave() }, ico('log-out', 16), 'Sair da sala'))));
 
     const addChannelBtn = h('button', { class: 'btn ghost', title: 'Novo canal', 'aria-label': 'Novo canal', onclick: openChannelModal }, ico('plus', 16));
 
@@ -1045,7 +1165,9 @@
           class: 'channel' + (ch.id === S.current ? ' active' : '') + (isVoice ? ' voice' : ''),
           'data-channel': ch.id,
           onclick: () => selectChannel(ch.id),
-        }, h('span', { class: 'hash' }, ico(isVoice ? 'voice' : 'channels', 18)), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
+        }, h('span', { class: 'hash' }, ico(isVoice ? 'voice' : 'channels', 18)), h('span', null, ch.name), unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null,
+          isVoice ? null : h('button', { class: 'mute-btn', type: 'button', 'data-act': 'mute-channel', title: isMuted(ch.id) ? 'Reativar avisos deste canal' : 'Silenciar este canal', 'aria-label': 'Silenciar canal', onclick: (e) => { e.stopPropagation(); toggleMuteChannel(ch.id); } }, ico('notifications', 14)));
+        if (!isVoice && isMuted(ch.id)) row.classList.add('muted');
         if (!isVoice) return row;
         const people = S.voice.rooms[ch.id] || [];
         return h('div', null, row,
@@ -1078,7 +1200,7 @@
       ...users.map((u) =>
         h('div', { class: 'member' + (S.online.has(u.id) ? '' : ' offline'), 'data-user': u.id },
           avatar(u.id, u.name, { presence: true }),
-          h('span', { class: 'name' }, u.name),
+          h('span', { class: 'name' }, u.name, u.statusText ? h('small', { class: 'status-text', title: u.statusText }, u.statusText) : null),
           u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, ico('crown', 14)) : null,
           u.id === S.heir ? h('span', { class: 'heir', title: 'Sucessor: guarda uma cópia e assume a sala se o host sair' }, ico('shield-lock', 14)) : null,
           me.role === 'owner' && u.role !== 'owner' && u.id !== S.heir
@@ -1223,7 +1345,7 @@
     const user = S.users.get(m.userId);
     const name = user ? user.name : m.author;
     const author = h('span', { class: 'author' }, name);
-    author.style.color = colorFor(m.userId);
+    author.style.color = userColor(m.userId);
     const mentioned = !m.deleted && (m.mentions || []).includes(me.id);
     const body = h('div', { class: 'body' },
       grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts)),
@@ -1605,6 +1727,23 @@
     if (nearBottom || m.userId === S.session.user.id) box.scrollTop = box.scrollHeight;
   }
 
+  // Canais silenciados: sem contador nem som (menções a mim ainda avisam). Guardado por sala neste computador.
+  const mutedKey = () => (S.session && S.session.room ? S.session.room.id : '');
+  const mutedSet = () => new Set((LS.get('concordo.mutedChannels', {}) || {})[mutedKey()] || []);
+  const isMuted = (ch) => mutedSet().has(ch);
+  function toggleMuteChannel(ch) {
+    const all = LS.get('concordo.mutedChannels', {}) || {};
+    const set = mutedSet();
+    if (set.has(ch)) set.delete(ch);
+    else set.add(ch);
+    all[mutedKey()] = [...set];
+    LS.set('concordo.mutedChannels', all);
+    if (set.has(ch)) S.unread.delete(ch);
+    renderChannels();
+    updateBadge();
+  }
+  const dnd = () => !!(S.session && S.users.get(S.session.user.id) && S.users.get(S.session.user.id).status === 'dnd');
+
   function onIncoming(m) {
     const entry = S.msgs.get(m.channel);
     const isNew = !!entry && !entry.list.some((x) => x.id === m.id);
@@ -1612,7 +1751,7 @@
     const mine = m.userId === S.session.user.id;
     if (m.channel === S.current) {
       if (isNew) appendMessage(m);
-    } else if (!mine) {
+    } else if (!mine && (!isMuted(m.channel) || (m.mentions || []).includes(S.session.user.id))) {
       S.unread.set(m.channel, (S.unread.get(m.channel) || 0) + 1);
       renderChannels();
     }
@@ -1621,7 +1760,7 @@
       S.typing.get(m.channel).delete(m.userId);
       renderTyping();
     }
-    if (!mine) {
+    if (!mine && (!isMuted(m.channel) || (m.mentions || []).includes(S.session.user.id))) {
       const away = !document.hasFocus();
       if (away && m.channel === S.current) S.away = (S.away || 0) + 1; // nas outras abas o contador já é o S.unread
       alertIncoming(m, { away, otherChannel: m.channel !== S.current });
@@ -1691,7 +1830,7 @@
   // Chegou mensagem de outra pessoa: som se eu não estou olhando para ela, popup só se o modo pedir.
   function alertIncoming(m, { away, otherChannel }) {
     if (notifyMode() === 'none') return;
-    if (away || otherChannel) sfx('message');
+    if ((away || otherChannel) && !dnd()) sfx('message');
     if (away && wantsPopup(m, false)) notify(m);
     updateBadge();
   }
@@ -1924,7 +2063,13 @@
         return renderMembers();
       case 'user':
         S.users.set(d.user.id, d.user);
-        return renderMembers();
+        if (S.session && d.user.id === S.session.user.id) {
+          for (const k of ['color', 'avatar', 'status', 'statusText']) delete S.session.user[k];
+          Object.assign(S.session.user, d.user);
+          renderMeBar();
+        }
+        renderMembers();
+        return renderChannels();
       case 'user_removed':
         S.users.delete(d.id);
         return renderMembers();
@@ -2713,6 +2858,49 @@
     else document.documentElement.setAttribute('data-theme', mode);
   }
 
+  // Aparência: cor de destaque, tamanho do texto e densidade. Valem só neste computador.
+  const ACCENTS = [[null, 'Padrão'], ['#6d4aff', 'Violeta'], ['#0e9f8e', 'Verde-água'], ['#2f6fdb', 'Azul'], ['#c0457a', 'Rosa'], ['#b7791f', 'Âmbar'], ['#be4b4b', 'Vermelho']];
+  const FONT_SIZES = { small: 13, normal: 14, large: 16 };
+  function applyLook() {
+    const root = document.documentElement;
+    const accent = LS.get('concordo.accent', null);
+    if (/^#[0-9a-f]{6}$/i.test(accent || '')) {
+      root.style.setProperty('--accent', accent);
+      root.style.setProperty('--accent-2', accent);
+    } else {
+      root.style.removeProperty('--accent');
+      root.style.removeProperty('--accent-2');
+    }
+    document.body.style.fontSize = (FONT_SIZES[LS.get('concordo.fontSize', 'normal')] || 14) + 'px';
+    const density = LS.get('concordo.density', 'normal');
+    if (density === 'normal') root.removeAttribute('data-density');
+    else root.setAttribute('data-density', density);
+  }
+  applyLook();
+
+  function lookChoice() {
+    const accent = h('div', { class: 'accent-swatches' });
+    const paint = () => {
+      accent.replaceChildren(...ACCENTS.map(([c, label]) => {
+        const b = h('button', { type: 'button', class: 'swatch' + ((LS.get('concordo.accent', null) || null) === c ? ' on' : ''), title: label, 'aria-label': 'Cor ' + label, 'data-accent': c || 'default', onclick: () => { LS.set('concordo.accent', c); applyLook(); paint(); } });
+        b.style.background = c || 'var(--concordo-violet)';
+        return b;
+      }));
+    };
+    paint();
+    const sel = (key, fallback, opts, role) => {
+      const el = h('select', { class: 'input', 'data-role': role }, ...opts.map(([v, t]) => h('option', { value: v }, t)));
+      el.value = LS.get(key, fallback);
+      el.addEventListener('change', () => { LS.set(key, el.value); applyLook(); });
+      return el;
+    };
+    return [
+      h('div', { class: 'field' }, h('label', null, 'Cor de destaque'), accent),
+      h('div', { class: 'field' }, h('label', null, 'Tamanho do texto'), sel('concordo.fontSize', 'normal', [['small', 'Pequeno'], ['normal', 'Normal'], ['large', 'Grande']], 'font-size')),
+      h('div', { class: 'field' }, h('label', null, 'Densidade das mensagens'), sel('concordo.density', 'normal', [['compact', 'Compacta'], ['normal', 'Normal'], ['comfortable', 'Confortável']], 'density')),
+    ];
+  }
+
   function themeChoice() {
     const wrap = h('div', { class: 'theme-choice', role: 'group', 'aria-label': 'Tema' });
     const options = [['auto', 'Automático', null], ['light', 'Claro', 'sun'], ['dark', 'Escuro', 'moon']];
@@ -2857,6 +3045,7 @@
       h('h3', null, 'Configurações'),
       h('h4', { class: 'sub' }, 'Aparência'),
       themeChoice(),
+      ...lookChoice(),
       h('h4', { class: 'sub' }, 'Aplicativo'),
       appCheck('closeToTray', 'Ao fechar a janela, continuar na bandeja do sistema'),
       h('label', { class: 'check' }, copyBox, h('span', null, 'Guardar uma cópia das salas neste computador (permite assumir a sala se o host sair; usa disco)')),
