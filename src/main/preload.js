@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('concordo', {
   appInfo: () => ipcRenderer.invoke('app:info'),
   hostStart: (opts) => ipcRenderer.invoke('host:start', opts),
   hostStop: (roomId) => ipcRenderer.invoke('host:stop', roomId),
+  hostDelete: (roomId) => ipcRenderer.invoke('host:delete', roomId),
   hostInfo: (roomId) => ipcRenderer.invoke('host:info', roomId),
   hostList: () => ipcRenderer.invoke('host:list'),
   hostOpen: (roomId) => ipcRenderer.invoke('host:open', roomId),

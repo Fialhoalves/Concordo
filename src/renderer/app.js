@@ -440,7 +440,24 @@
           h('div', { class: 'name' }, r.name || 'Sala'),
           h('div', { class: 'hint' }, 'você hospeda'),
           h('div', { class: 'room-status', 'data-state': r.running ? 'online' : 'offline' }, r.running ? 'aberta neste computador' : 'fechada: abre quando você quiser')),
-        h('div', { class: 'row' }, open));
+        h('div', { class: 'row' }, open,
+          bridge.hostDelete ? h('button', {
+            class: 'btn small ghost',
+            title: 'Apagar esta sala deste computador',
+            'aria-label': 'Apagar sala',
+            'data-act': 'delete-hosted',
+            onclick: async () => {
+              try {
+                if (await bridge.hostDelete(r.roomId)) {
+                  await refreshHosted();
+                  showWelcome();
+                  toast('Sala apagada deste computador.', 'ok');
+                }
+              } catch (e) {
+                toast(e.message, 'error');
+              }
+            },
+          }, ico('trash', 16)) : null));
     });
 
     const rows = new Map(); // roomId -> { status, enter, reopen, note }
@@ -733,7 +750,13 @@
     const name = cleanNick(nickname);
     if (!name) throw new Error('Escolha um apelido.');
     LS.set('concordo.nick', name);
-    const res = await request(d.url, null, 'POST', '/api/join', { invite: d.invite, name });
+    let keys = null;
+    try {
+      if (Keys && Keys.supported()) keys = await Keys.load(d.roomId);
+    } catch {
+      /* sem chaves neste computador: entra sem assinatura */
+    }
+    const res = await request(d.url, null, 'POST', '/api/join', { invite: d.invite, name, ...(keys ? { pub: keys.pub, dh: keys.dh } : {}) });
     enterGuest({ url: d.url, token: res.token, user: res.user, room: res.room, rv: d.rv });
   }
 
@@ -764,6 +787,8 @@
     ui.tunnel = h('div', { class: 'status-line' });
     ui.channelList = h('div');
     ui.memberList = h('div');
+    ui.dmList = h('div');
+    ui.dmHead = h('div', { class: 'section', hidden: true }, h('span', null, 'Mensagens diretas'));
     ui.chName = h('div', { class: 'ch' }, '#');
     ui.conn = h('div', { class: 'conn' });
     ui.messages = h('div', { class: 'messages' });
@@ -870,6 +895,8 @@
           h('div', { class: 'side-scroll' },
             h('div', { class: 'section' }, h('span', null, 'Canais'), S.session.user.role === 'owner' ? addChannelBtn : null),
             ui.channelList,
+            ui.dmHead,
+            ui.dmList,
             h('div', { class: 'section' }, h('span', null, 'Membros')),
             ui.memberList),
           ui.voicePanel,
@@ -1029,7 +1056,7 @@
         sfx('message');
         if (notifyMode() === 'all' || (notifyMode() === 'mentions' && (m.mentions || []).includes(c.info.userId))) {
           try {
-            const body = m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
+            const body = isDmId(m.channel) ? 'Mensagem direta' : m.text || (m.attachments && m.attachments[0] ? 'Arquivo: ' + m.attachments[0].name : '');
             const n = new Notification(`${m.author} · ${c.info.name || 'outra sala'} · #${m.channel}`, { body });
             n.onclick = () => (bridge.showWindow ? bridge.showWindow() : window.focus());
           } catch {
@@ -1118,6 +1145,194 @@
   // ============================================================
   // chat: carregamento e renderização
   // ============================================================
+  // ============================================================
+  // segurança: chaves, assinaturas e conversas diretas cifradas
+  // ============================================================
+  const Keys = window.ConcordoKeys;
+  const Sig = window.ConcordoSig;
+  const roomId = () => (S.session && S.session.room ? S.session.room.id : '');
+  const DM_MAX_CHARS = 3000; // o texto cifrado cresce: este limite mantém a mensagem dentro do que o servidor aceita
+
+  // Chaves de cada pessoa que vi pela primeira vez ficam "fixadas" neste computador. Se o servidor (ou alguém)
+  // trocar a chave dela depois, aviso em vez de aceitar em silêncio.
+  const pinsAll = () => LS.get('concordo.keypins', {}) || {};
+  const pinOf = (id) => (pinsAll()[roomId()] || {})[id] || null;
+  function setPin(id, rec) {
+    const all = pinsAll();
+    (all[roomId()] = all[roomId()] || {})[id] = rec;
+    LS.set('concordo.keypins', all);
+  }
+  const keyAlerts = new Set();
+
+  function checkPin(u) {
+    if (!u || !u.pub || !S.session || u.id === S.session.user.id) return;
+    const rec = pinOf(u.id);
+    if (!rec) {
+      setPin(u.id, { pubs: [u.pub], dhs: u.dh ? [u.dh] : [] });
+      return;
+    }
+    if (u.dh && !rec.dhs.includes(u.dh) && rec.dhs.length === 0) {
+      rec.dhs.push(u.dh);
+      setPin(u.id, rec);
+    }
+    const changed = !rec.pubs.includes(u.pub) || (u.dh && !rec.dhs.includes(u.dh));
+    if (changed && !keyAlerts.has(u.id)) {
+      keyAlerts.add(u.id);
+      toast(`A chave de segurança de ${u.name} mudou. Se ela trocou de computador, confirme com ela; depois use "Confiar na nova chave" no menu dela (botão direito).`, 'error');
+    }
+    if (!changed) keyAlerts.delete(u.id);
+  }
+
+  function acceptKey(id) {
+    const u = S.users.get(id);
+    if (!u || !u.pub) return;
+    const rec = pinOf(id) || { pubs: [], dhs: [] };
+    if (!rec.pubs.includes(u.pub)) rec.pubs.push(u.pub);
+    if (u.dh && !rec.dhs.includes(u.dh)) rec.dhs.push(u.dh);
+    setPin(id, rec);
+    keyAlerts.delete(id);
+    for (const entry of S.msgs.values()) for (const m of entry.list) {
+      delete m.sigState;
+      if (m.plain === DECRYPT_FAIL) delete m.plain;
+    }
+    reloadCurrent();
+    toast(`Chave de ${u.name} aceita.`, 'ok');
+  }
+
+  async function reloadCurrent() {
+    const entry = S.msgs.get(S.current);
+    if (!entry) return;
+    await prepareMessages(entry.list);
+    renderMessages({ keepScroll: true });
+  }
+
+  // Chaves deste computador e registro delas na sala (uma vez só; depois a sala reconhece a chave).
+  async function initKeys() {
+    S.keys = null;
+    S.keyOk = false;
+    S.keyProblem = false;
+    if (!Keys || !Keys.supported()) return;
+    try {
+      S.keys = await Keys.load(roomId());
+    } catch {
+      return;
+    }
+    const me = S.session.user;
+    if (me.pub && me.pub !== S.keys.pub) {
+      S.keyProblem = true;
+      toast('A chave de assinatura deste computador não é a registrada na sua conta (você entrou por outro computador?). Peça ao dono ou a um moderador para liberar suas chaves; suas mensagens ficam sem assinatura até lá.', 'error');
+      return;
+    }
+    if (me.pub !== S.keys.pub || me.dh !== S.keys.dh) {
+      try {
+        const r = await api('PATCH', '/api/me', { pub: S.keys.pub, dh: S.keys.dh });
+        S.session.user = { ...S.session.user, ...r.user };
+        S.users.set(r.user.id, r.user);
+      } catch (e) {
+        S.keyProblem = true;
+        toast(e.message, 'error');
+        return;
+      }
+    }
+    S.keyOk = true;
+  }
+
+  const DECRYPT_FAIL = '🔒 Não consegui decifrar esta mensagem.';
+  const textOf = (m) => (m.plain !== undefined ? m.plain : m.text);
+  const dmOther = (ch) => (ch.members || []).find((x) => x !== S.session.user.id);
+  const isDmId = (id) => (S.channels.find((c) => c.id === id) || {}).type === 'dm';
+
+  // chaves da conversa: uma para enviar (a mais nova aceita) e todas para decifrar
+  async function dmKeysFor(chId) {
+    const ch = S.channels.find((c) => c.id === chId);
+    if (!ch || !S.keys) return null;
+    const other = S.users.get(dmOther(ch));
+    if (!other) return null;
+    const rec = pinOf(other.id);
+    const dhs = rec && rec.dhs.length ? rec.dhs : other.dh ? [other.dh] : [];
+    if (!dhs.length) return { other, send: null, all: [], reason: `${other.name} ainda não atualizou o app para conversas diretas.` };
+    const info = { roomId: roomId(), me: S.session.user.id, them: other.id };
+    const all = [];
+    for (const dh of dhs) all.push(await Keys.dmKey(S.keys, dh, info));
+    const blocked = keyAlerts.has(other.id);
+    return { other, all, send: blocked ? null : all[all.length - 1], reason: blocked ? `A chave de ${other.name} mudou. Confirme com ela e use "Confiar na nova chave" no menu dela.` : '' };
+  }
+
+  async function decryptDm(m) {
+    const ctx = await dmKeysFor(m.channel);
+    if (!ctx) return null;
+    for (const key of [...ctx.all].reverse()) {
+      const t = await Keys.decrypt(key, m.text, m.channel);
+      if (t !== null) return t;
+    }
+    return null;
+  }
+
+  // Estado da assinatura: 'ok' | 'bad' (não confere) | 'missing' (a pessoa assina mas esta não veio assinada) | '' (sem chave)
+  async function verifyMessage(m) {
+    if (m.deleted || !Keys || !Keys.supported() || !S.session) {
+      m.sigState = '';
+      return '';
+    }
+    const mine = m.userId === S.session.user.id;
+    const u = S.users.get(m.userId);
+    const pubs = mine ? (S.keys ? [S.keys.pub] : u && u.pub ? [u.pub] : []) : (pinOf(m.userId) || {}).pubs || [];
+    if (!pubs.length) {
+      m.sigState = '';
+      return '';
+    }
+    const room = roomId();
+    let payload;
+    let sig;
+    if (m.editedAt) {
+      payload = Sig.editPayload({ room, id: m.id, user: m.userId, nonce: m.editNonce, text: m.text });
+      sig = m.editSig;
+    } else if ((m.attachments || []).length && !m.text) {
+      payload = Sig.filePayload({ room, id: m.id, channel: m.channel, user: m.userId, nonce: m.nonce, attachments: m.attachments });
+      sig = m.sig;
+    } else {
+      payload = Sig.msgPayload({ room, channel: m.channel, user: m.userId, nonce: m.nonce, text: m.text, replyTo: m.replyTo ? m.replyTo.id : '' });
+      sig = m.sig;
+    }
+    let state;
+    if (!sig) state = u && m.ts >= (u.pubAt || 0) ? 'missing' : '';
+    else {
+      let ok = false;
+      for (const p of pubs) {
+        if (await Keys.verify(p, payload, sig)) {
+          ok = true;
+          break;
+        }
+      }
+      state = ok ? 'ok' : 'bad';
+    }
+    m.sigState = state;
+    return state;
+  }
+
+  async function prepareMessages(list) {
+    await Promise.all(list.map(async (m) => {
+      if (isDmId(m.channel) && !m.deleted && m.plain === undefined) {
+        const t = await decryptDm(m).catch(() => null);
+        m.plain = t === null ? DECRYPT_FAIL : t;
+      }
+      if (m.sigState === undefined) await verifyMessage(m);
+    }));
+    return list;
+  }
+
+  const SIG_TEXT = {
+    ok: 'Assinatura conferida: foi esta pessoa mesmo que enviou.',
+    bad: 'ATENÇÃO: a assinatura não confere. A mensagem pode ter sido alterada ou não ser desta pessoa.',
+    missing: 'Esta pessoa assina as mensagens, mas esta veio sem assinatura.',
+  };
+  function sigBadge(m) {
+    const st = m.sigState;
+    const el = h('span', { class: 'sig-badge' + (st ? ' ' + st : ''), 'data-sig': st || '', title: SIG_TEXT[st] || '' }, st === 'ok' ? ico('shield-lock', 12) : st ? '⚠' : null);
+    if (!st) el.hidden = true;
+    return el;
+  }
+
   async function showChat() {
     S.leaving = false;
     S.hasConnected = false;
@@ -1127,6 +1342,9 @@
     S.unread = new Map();
     S.newSince = new Map();
     S.current = null;
+    S.keys = null;
+    S.keyOk = false;
+    keyAlerts.clear();
     buildChatDom();
     try {
       await loadState();
@@ -1151,15 +1369,60 @@
     S.session.user = st.you;
     S.session.room = st.room;
     S.ui.roomName.textContent = st.room.name;
+    for (const u of S.users.values()) checkPin(u);
+    await initKeys();
     renderChannels();
     renderMembers();
     syncBackup();
   }
 
+  function renderDms() {
+    if (!S.ui.dmList) return;
+    const dms = S.channels.filter((c) => c.type === 'dm');
+    S.ui.dmHead.hidden = !dms.length;
+    S.ui.dmList.replaceChildren(...dms.map((ch) => {
+      const other = S.users.get(dmOther(ch));
+      const unread = S.unread.get(ch.id) || 0;
+      return h('div', {
+        class: 'channel dm' + (ch.id === S.current ? ' active' : ''),
+        'data-channel': ch.id,
+        title: 'Conversa cifrada de ponta a ponta. Botão direito: marcar como lida',
+        onclick: () => selectChannel(ch.id),
+        oncontextmenu: (e) => {
+          e.preventDefault();
+          markChannelRead(ch.id);
+        },
+      }, avatar(other ? other.id : ch.id, other ? other.name : '?', { presence: true }), h('span', null, other ? other.name : '?'),
+      unread ? h('span', { class: 'badge' }, unread > 99 ? '99+' : unread) : null);
+    }));
+  }
+
+  async function openDm(userId) {
+    try {
+      if (!S.keys || !S.keyOk) return toast('Suas chaves de segurança ainda não estão prontas neste computador.', 'error');
+      const r = await api('POST', '/api/dms', { userId });
+      if (!S.channels.some((c) => c.id === r.channel.id)) S.channels.push(r.channel);
+      renderChannels();
+      await selectChannel(r.channel.id);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  // código para os dois conferirem por fora que ninguém está no meio da conversa
+  async function dmCode(ch) {
+    const ctx = await dmKeysFor(ch.id);
+    if (!ctx || !ctx.all.length || !S.keys) return '';
+    const rec = pinOf(ctx.other.id);
+    const theirs = rec && rec.dhs.length ? rec.dhs[rec.dhs.length - 1] : ctx.other.dh;
+    return Keys.fingerprint(S.keys.dh, theirs);
+  }
+
   function renderChannels() {
     if (!S.ui.channelList) return;
+    renderDms();
     S.ui.channelList.replaceChildren(
-      ...S.channels.map((ch) => {
+      ...S.channels.filter((c) => c.type !== 'dm').map((ch) => {
         const unread = S.unread.get(ch.id) || 0;
         const isVoice = ch.type === 'voice';
         const row = h('div', {
@@ -1209,6 +1472,7 @@
           avatar(u.id, u.name, { presence: true }),
           h('span', { class: 'name' }, u.name, u.statusText ? h('small', { class: 'status-text', title: u.statusText }, u.statusText) : null),
           u.role === 'owner' ? h('span', { class: 'crown', title: 'Dono da sala' }, ico('crown', 14)) : null,
+          u.role === 'mod' ? h('span', { class: 'mod-mark', title: 'Moderador' }, ico('shield', 14)) : null,
           u.id === S.heir ? h('span', { class: 'heir', title: 'Sucessor: guarda uma cópia e assume a sala se o host sair' }, ico('shield-lock', 14)) : null,
           me.role === 'owner' && u.role !== 'owner' && u.id !== S.heir
             ? h('button', {
@@ -1217,11 +1481,20 @@
                 onclick: () => makeHeir(u),
               }, ico('shield-lock', 14))
             : null,
-          me.role === 'owner' && u.id !== me.id
+          u.id !== me.id
             ? h('button', {
                 class: 'btn small ghost kick',
-                title: 'Remover da sala',
-                onclick: () => removeMember(u),
+                title: 'Mensagem direta (cifrada)',
+                'data-act': 'dm-member',
+                onclick: () => openDm(u.id),
+              }, ico('chat', 14))
+            : null,
+          canModerate(u)
+            ? h('button', {
+                class: 'btn small ghost kick',
+                title: 'Expulsar ou banir',
+                'data-act': 'moderate-member',
+                onclick: () => openModerate(u),
               }, ico('close', 14))
             : null),
       ),
@@ -1237,14 +1510,51 @@
     }
   }
 
-  async function removeMember(u) {
-    if (!confirm(`Remover ${u.name} da sala? A pessoa precisará de um novo convite para voltar.`)) return;
+  // quem pode moderar quem: o dono modera todos (menos ele); moderador só modera membros comuns
+  function canModerate(u) {
+    const me = S.session.user;
+    if (!u || u.id === me.id) return false;
+    if (me.role === 'owner') return u.role !== 'owner';
+    return me.role === 'mod' && u.role === 'member';
+  }
+
+  async function setRole(u, role) {
     try {
-      await api('DELETE', `/api/users/${u.id}`);
-      toast(`${u.name} foi removido(a).`, 'ok');
+      await api('POST', `/api/users/${u.id}/role`, { role });
+      toast(role === 'mod' ? `${u.name} agora é moderador(a).` : `${u.name} não é mais moderador(a).`, 'ok');
     } catch (e) {
       toast(e.message, 'error');
     }
+  }
+
+  async function resetKeys(u) {
+    if (!confirm(`Liberar as chaves de segurança de ${u.name}? Use só se ela trocou de computador ou perdeu o acesso. Enquanto isso, as mensagens novas dela não são assinadas.`)) return;
+    try {
+      await api('POST', `/api/users/${u.id}/reset-keys`);
+      toast(`Chaves de ${u.name} liberadas. Ela registra de novo ao reabrir a sala.`, 'ok');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function openModerate(u) {
+    const run = async (ban) => {
+      try {
+        const r = await api('DELETE', `/api/users/${u.id}${ban ? '?ban=1' : ''}`);
+        toast(ban ? (r.banned ? `${u.name} foi banido(a).` : `${u.name} foi removido(a) (sem chave registrada, então não dá para impedir a volta).`) : `${u.name} foi removido(a).`, 'ok');
+        close();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    };
+    const close = modal([
+      h('h3', null, `Remover ${u.name}`),
+      h('p', { class: 'hint' }, 'Expulsar tira a pessoa da sala; ela só volta com um convite novo. Banir também bloqueia a chave de segurança dela: com o mesmo computador não entra mais, nem com convite novo. Quem apagar os dados do app e gerar uma chave nova ainda pode entrar com um convite, então o que protege de verdade é só mandar convites para quem você conhece.'),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', onclick: () => close() }, 'Cancelar'),
+        h('button', { class: 'btn danger', 'data-act': 'kick', onclick: () => run(false) }, 'Expulsar'),
+        h('button', { class: 'btn danger', 'data-act': 'ban', onclick: () => run(true) }, 'Banir')),
+    ]);
   }
 
   // Lido/não lido e rascunhos por canal (por sala, neste computador).
@@ -1293,8 +1603,21 @@
     renderChannels();
     const ch = S.channels.find((c) => c.id === id);
     const isVoice = !!ch && ch.type === 'voice';
-    S.ui.chName.replaceChildren(ico(isVoice ? 'voice' : 'channels', 20), document.createTextNode(ch ? ch.name : id));
+    const isDm = !!ch && ch.type === 'dm';
+    const dmUser = isDm ? S.users.get(dmOther(ch)) : null;
+    S.ui.chName.replaceChildren(ico(isVoice ? 'voice' : isDm ? 'shield-lock' : 'channels', 20), document.createTextNode(isDm ? (dmUser ? dmUser.name : '?') : ch ? ch.name : id));
+    if (S.ui.textarea) {
+      S.ui.textarea.placeholder = isDm ? `Mensagem cifrada para ${dmUser ? dmUser.name : 'a pessoa'}…` : 'Escreva uma mensagem…';
+      S.ui.textarea.maxLength = isDm ? DM_MAX_CHARS : 4000;
+    }
+    if (isDm) {
+      dmCode(ch).then((code) => {
+        if (S.current !== id || !code) return;
+        S.ui.chName.append(h('span', { class: 'dm-code', title: 'Conversa cifrada de ponta a ponta: só vocês dois leem. Para ter certeza de que ninguém está no meio, compare este código com o da outra pessoa por fora do Concordo (ligação, pessoalmente). Se for igual, está tudo certo.' }, 'código ' + code));
+      }).catch(() => {});
+    }
     S.ui.main.classList.toggle('is-voice', isVoice);
+    S.ui.main.classList.toggle('is-dm', isDm);
     if (isVoice) {
       renderStage();
       return;
@@ -1319,6 +1642,7 @@
     const q = new URLSearchParams({ limit: '50' });
     if (older && entry.list.length) q.set('before', entry.list[0].id);
     const data = await api('GET', `/api/channels/${id}/messages?${q}`);
+    await prepareMessages(data.messages);
     entry.list = older ? [...data.messages, ...entry.list] : data.messages;
     entry.hasMore = data.hasMore;
     if (!older) entry.partial = false;
@@ -1464,7 +1788,7 @@
     author.style.color = userColor(m.userId);
     const mentioned = !m.deleted && (m.mentions || []).includes(me.id);
     const body = h('div', { class: 'body' },
-      grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts)),
+      grouped ? null : h('div', { class: 'meta' }, author, h('span', { class: 'time' }, hhmm(m.ts)), sigBadge(m),
         m.pinned ? h('span', { class: 'pin-mark', title: 'Mensagem fixada' }, ico('pin', 13)) : null),
       m.replyTo && !m.deleted
         ? h('button', { class: 'reply-ref', title: 'Ir para a mensagem', onclick: () => jumpToMessage(m.channel, m.replyTo.id) },
@@ -1472,14 +1796,14 @@
         : null,
       m.deleted
         ? h('div', { class: 'text deleted' }, 'Mensagem apagada')
-        : (m.text ? h('div', { class: 'text' }, formatText(m.text),
+        : (textOf(m) ? h('div', { class: 'text' }, formatText(textOf(m)),
           m.editedAt ? h('span', { class: 'edited', title: 'Editada às ' + hhmm(m.editedAt) }, ' (editada)') : null) : null),
       ...(m.deleted ? [] : (m.attachments || []).map(attachmentEl)),
       m.deleted ? null : reactionsEl(m));
     const el = h('div', {
-      class: 'msg' + (grouped ? '' : ' head') + (mentioned ? ' mentioned' : '') + (m.pinned ? ' pinned' : '') + (m.deleted ? ' is-deleted' : ''),
+      class: 'msg' + (m.sigState === 'bad' ? ' sig-bad' : m.sigState === 'missing' ? ' sig-missing' : '') + (grouped ? '' : ' head') + (mentioned ? ' mentioned' : '') + (m.pinned ? ' pinned' : '') + (m.deleted ? ' is-deleted' : ''),
       'data-id': m.id,
-    }, grouped ? h('div', { class: 'gutter' }, hhmm(m.ts)) : avatar(m.userId, name, { big: true }), body, m.deleted ? null : msgTools(m));
+    }, grouped ? h('div', { class: 'gutter' }, hhmm(m.ts), sigBadge(m)) : avatar(m.userId, name, { big: true }), body, m.deleted ? null : msgTools(m));
     el.dataset.grouped = grouped ? '1' : '';
     return el;
   }
@@ -1489,16 +1813,28 @@
     const mine = m.userId === me.id;
     const tool = (act, label, icon, onclick, extra = '') =>
       h('button', { class: 'msg-tool' + extra, title: label, 'aria-label': label, 'data-act': act, onclick }, ico(icon, 16));
+    const dm = isDmId(m.channel);
+    const author = S.users.get(m.userId);
+    const mayModerate = me.role === 'owner' || (me.role === 'mod' && (!author || author.role === 'member'));
     return h('div', { class: 'msg-tools' },
       tool('react-msg', 'Reagir', 'smile', (e) => openReactionPicker(e.currentTarget, (key) => toggleReaction(m.id, key)), ' msg-react'),
-      tool('reply-msg', 'Responder', 'reply', () => startReply(m)),
-      mine && m.text ? tool('edit-msg', 'Editar', 'edit', () => startEdit(m)) : null,
-      tool('pin-msg', m.pinned ? 'Desafixar' : 'Fixar', 'pin', () => msgCall('POST', m.id, '/pin')),
-      mine || me.role === 'owner'
+      dm ? null : tool('reply-msg', 'Responder', 'reply', () => startReply(m)),
+      mine && m.text && !dm && !(m.attachments || []).length ? tool('edit-msg', 'Editar', 'edit', () => startEdit(m)) : null,
+      dm ? null : tool('pin-msg', m.pinned ? 'Desafixar' : 'Fixar', 'pin', () => msgCall('POST', m.id, '/pin')),
+      mine || mayModerate
         ? tool('delete-msg', 'Apagar', 'trash', () => {
           if (confirm('Apagar esta mensagem para todos?')) msgCall('DELETE', m.id, '');
         }, ' danger')
         : null);
+  }
+
+  async function signedEdit(m, text) {
+    const body = { text };
+    if (S.keys && S.keyOk) {
+      body.nonce = Keys.nonce();
+      body.sig = await S.keys.sign(Sig.editPayload({ room: roomId(), id: m.id, user: S.session.user.id, nonce: body.nonce, text }));
+    }
+    return msgCall('PATCH', m.id, '', body);
   }
 
   async function msgCall(method, id, suffix, body) {
@@ -1509,8 +1845,11 @@
     }
   }
 
-  function applyMessageUpdate(m) {
+  async function applyMessageUpdate(m) {
     const entry = S.msgs.get(m.channel);
+    const old = entry && entry.list.find((x) => x.id === m.id);
+    if (old && old.plain !== undefined && !m.deleted) m.plain = old.plain;
+    await prepareMessages([m]);
     if (entry) {
       const i = entry.list.findIndex((x) => x.id === m.id);
       if (i >= 0) entry.list[i] = m;
@@ -1552,7 +1891,7 @@
     box.value = m.text;
     const done = (save) => {
       const text = box.value.trim();
-      if (save && text && text !== m.text) msgCall('PATCH', m.id, '', { text });
+      if (save && text && text !== m.text) signedEdit(m, text);
       applyMessageUpdate(S.msgs.get(m.channel)?.list.find((x) => x.id === m.id) || m);
     };
     box.addEventListener('keydown', (e) => {
@@ -1575,6 +1914,7 @@
       let el = document.querySelector(`.msg[data-id="${id}"]`);
       if (!el) {
         const data = await api('GET', `/api/channels/${channel}/messages?around=${id}&limit=50`);
+        await prepareMessages(data.messages);
         S.msgs.set(channel, { list: data.messages, hasMore: data.hasMore, partial: true });
         renderMessages();
         el = document.querySelector(`.msg[data-id="${id}"]`);
@@ -1860,7 +2200,13 @@
   }
   const dnd = () => !!(S.session && S.users.get(S.session.user.id) && S.users.get(S.session.user.id).status === 'dnd');
 
+  let incomingChain = Promise.resolve();
   function onIncoming(m) {
+    incomingChain = incomingChain.then(() => prepareMessages([m])).then(() => onIncomingNow(m)).catch(() => {});
+    return incomingChain;
+  }
+
+  function onIncomingNow(m) {
     const entry = S.msgs.get(m.channel);
     const isNew = !!entry && !entry.list.some((x) => x.id === m.id);
     if (isNew) entry.list.push(m);
@@ -1960,22 +2306,61 @@
   // ============================================================
   // envio de mensagens e arquivos
   // ============================================================
-  function sendMessage() {
-    const text = S.ui.textarea.value.trim();
-    if (!text) return;
-    if (text.length > S.limits.maxMessageLength) return toast('Mensagem longa demais.', 'error');
+  async function sendMessage() {
+    const raw = S.ui.textarea.value.trim();
+    if (!raw) return;
+    const channel = S.current;
+    const dm = isDmId(channel);
+    if (raw.length > (dm ? DM_MAX_CHARS : S.limits.maxMessageLength)) return toast('Mensagem longa demais.', 'error');
     if (!S.ws || S.ws.readyState !== 1) return toast('Sem conexão com a sala. Aguarde a reconexão.', 'error');
-    const reply = S.replyTo && S.replyTo.channel === S.current ? S.replyTo.id : undefined;
-    S.ws.send(JSON.stringify({ t: 'msg', channel: S.current, text, replyTo: reply }));
+    const reply = !dm && S.replyTo && S.replyTo.channel === channel ? S.replyTo.id : undefined;
+    // esvazia o campo já: assinar e cifrar são assíncronos e um Enter repetido não pode mandar duas vezes
     cancelReply();
     closeMentionPop();
     S.ui.textarea.value = '';
-    saveDraft(S.current);
+    saveDraft(channel);
     autosize();
+    const giveBack = (why) => {
+      if (S.current === channel && !S.ui.textarea.value) {
+        S.ui.textarea.value = raw;
+        autosize();
+      }
+      toast(why, 'error');
+    };
+    try {
+      let wire = raw;
+      if (dm) {
+        const ctx = await dmKeysFor(channel);
+        if (!ctx || !ctx.send) return giveBack((ctx && ctx.reason) || 'Não consegui preparar a chave desta conversa.');
+        wire = await Keys.encrypt(ctx.send, raw, channel);
+      }
+      const msg = { t: 'msg', channel, text: wire, replyTo: reply };
+      if (S.keys && S.keyOk) {
+        msg.nonce = Keys.nonce();
+        msg.sig = await S.keys.sign(Sig.msgPayload({ room: roomId(), channel, user: S.session.user.id, nonce: msg.nonce, text: wire, replyTo: reply || '' }));
+      }
+      if (!S.ws || S.ws.readyState !== 1) return giveBack('Sem conexão com a sala. Aguarde a reconexão.');
+      S.ws.send(JSON.stringify(msg));
+    } catch (e) {
+      giveBack(e.message || 'Não consegui enviar.');
+    }
   }
 
   async function uploadFiles(files) {
+    if (isDmId(S.current)) return toast('Arquivos ainda não são aceitos em conversas diretas.', 'error');
     for (const f of files) await uploadFile(f, S.current);
+  }
+
+  // mensagem com arquivo: assinada logo depois do envio, quando o id do arquivo já existe
+  async function signUpload(message) {
+    if (!message || !S.keys || !S.keyOk) return;
+    try {
+      const nonce = Keys.nonce();
+      const sig = await S.keys.sign(Sig.filePayload({ room: roomId(), id: message.id, channel: message.channel, user: S.session.user.id, nonce, attachments: message.attachments }));
+      await api('POST', `/api/messages/${message.id}/sig`, { nonce, sig });
+    } catch {
+      /* sem assinatura: a mensagem continua valendo, só aparece sem o selo */
+    }
   }
 
   function uploadFile(file, channel) {
@@ -2013,6 +2398,12 @@
             /* sem corpo */
           }
           toast(`Falha ao enviar "${file.name}": ${reason}`, 'error');
+        } else {
+          try {
+            signUpload(JSON.parse(xhr.responseText).message);
+          } catch {
+            /* resposta sem mensagem: segue sem assinar */
+          }
         }
         done();
       };
@@ -2186,10 +2577,12 @@
         return renderMembers();
       case 'user':
         S.users.set(d.user.id, d.user);
+        checkPin(d.user);
         if (S.session && d.user.id === S.session.user.id) {
-          for (const k of ['color', 'avatar', 'status', 'statusText']) delete S.session.user[k];
+          for (const k of ['color', 'avatar', 'status', 'statusText', 'pub', 'dh', 'pubAt']) delete S.session.user[k];
           Object.assign(S.session.user, d.user);
           renderMeBar();
+          if (!d.user.pub && S.keys) initKeys(); // o dono liberou minhas chaves: registra de novo
         }
         renderMembers();
         return renderChannels();
@@ -2824,6 +3217,21 @@
         closeContextMenu();
       } }, 'Redefinir volumes'),
     ];
+    const target = S.users.get(id);
+    const me = S.session.user;
+    if (target && id !== me.id) {
+      items.push(h('div', { class: 'ctx-sep' }));
+      items.push(h('button', { class: 'ctx-btn', 'data-act': 'dm', onclick: () => { closeContextMenu(); openDm(id); } }, 'Mensagem direta (cifrada)'));
+      if (keyAlerts.has(id)) items.push(h('button', { class: 'ctx-btn', 'data-act': 'accept-key', onclick: () => { closeContextMenu(); acceptKey(id); } }, 'Confiar na nova chave'));
+      if (canModerate(target)) {
+        if (me.role === 'owner') {
+          const toMod = target.role !== 'mod';
+          items.push(h('button', { class: 'ctx-btn', 'data-act': 'role', onclick: () => { closeContextMenu(); setRole(target, toMod ? 'mod' : 'member'); } }, toMod ? 'Tornar moderador' : 'Remover de moderador'));
+        }
+        items.push(h('button', { class: 'ctx-btn', 'data-act': 'reset-keys', onclick: () => { closeContextMenu(); resetKeys(target); } }, 'Liberar chaves de segurança'));
+        items.push(h('button', { class: 'ctx-btn danger', 'data-act': 'moderate', onclick: () => { closeContextMenu(); openModerate(target); } }, 'Expulsar ou banir…'));
+      }
+    }
     if (tile) {
       const v = tile.querySelector('video');
       items.push(h('button', { class: 'ctx-btn', onclick: () => {
@@ -3333,6 +3741,26 @@
     const gen = h('button', { class: 'btn primary' }, 'Gerar convite');
     const session = h('button', { class: 'btn small' }, 'Código para quem já entrou');
     const copy = h('button', { class: 'btn', onclick: () => box.value && copyText(box.value, box) }, 'Copiar');
+    const openInvites = h('div', { class: 'invite-list' });
+    const loadInvites = async () => {
+      if (S.session.user.role !== 'owner') return;
+      try {
+        const { invites } = await api('GET', '/api/invites');
+        openInvites.replaceChildren(...(invites.length ? [h('h4', { class: 'sub' }, 'Convites abertos')] : []), ...invites.map((i) =>
+          h('div', { class: 'invite-row', 'data-invite': i.token },
+            h('span', null, `${i.maxUses ? `${i.uses}/${i.maxUses} usos` : `${i.uses} usos (sem limite)`} · vence ${new Date(i.expiresAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`),
+            h('button', { class: 'btn small ghost', 'data-act': 'revoke-invite', onclick: async () => {
+              try {
+                await api('DELETE', `/api/invites/${i.token}`);
+                loadInvites();
+              } catch (e) {
+                toast(e.message, 'error');
+              }
+            } }, 'Revogar'))));
+      } catch {
+        /* sem lista: não atrapalha o convite */
+      }
+    };
 
     gen.addEventListener('click', async () => {
       gen.disabled = true;
@@ -3340,6 +3768,7 @@
         const r = await api('POST', '/api/invites', { maxUses: parseInt(uses.value, 10), hours: 24 });
         box.value = r.code;
         note.textContent = 'Mande este código para o seu amigo. Ele cola em "Entrar" no Concordo.';
+        loadInvites();
       } catch (e) {
         toast(e.message, 'error');
       }
@@ -3355,6 +3784,7 @@
       }
     });
 
+    loadInvites();
     if (sessionCode) {
       note.textContent = 'Você assumiu a sala! Mande este código para o pessoal colar em "Entrar": quem já estava na sala reconecta sem convite novo.';
       setTimeout(() => session.click(), 0);
@@ -3365,6 +3795,7 @@
       h('div', { class: 'row' }, gen, session),
       h('div', { class: 'field', style: { marginTop: '14px' } }, h('label', null, 'Código'), box),
       note,
+      openInvites,
       h('div', { class: 'row between', style: { marginTop: '14px' } },
         copy,
         h('button', { class: 'btn ghost', onclick: () => close() }, 'Fechar')),

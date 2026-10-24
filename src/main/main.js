@@ -784,6 +784,34 @@ ipcMain.handle('host:stop', async (_event, roomId) => {
   return true;
 });
 
+// Apaga de vez uma sala que EU hospedo (a pasta dela neste computador). Pede confirmação aqui no processo principal,
+// com uma janela do sistema, para um clique perdido na interface nunca apagar nada.
+ipcMain.handle('host:delete', async (_event, roomId) => {
+  if (!roomIdOk(roomId)) throw new Error('Sala inválida.');
+  const dir = path.join(hostRoot(), roomId);
+  if (!fs.existsSync(dir)) throw new Error('Não encontrei os dados dessa sala neste computador.');
+  let name = 'esta sala';
+  try {
+    name = `"${JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')).room.name}"`;
+  } catch {
+    /* sem nome */
+  }
+  const { response } = await dialog.showMessageBox(mainWindow || undefined, {
+    type: 'warning',
+    buttons: ['Cancelar', 'Apagar para sempre'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Apagar sala',
+    message: `Apagar ${name} deste computador?`,
+    detail: 'Todas as mensagens e arquivos que estão aqui serão apagados e não dá para desfazer. Quem tem uma cópia da sala (o sucessor) continua com ela.',
+  });
+  if (response !== 1) return false;
+  await stopHost(roomId);
+  fs.rmSync(dir, { recursive: true, force: true });
+  diskCache = { at: 0, data: null };
+  return true;
+});
+
 // ---------- outros IPCs ----------
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged }));
 

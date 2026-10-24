@@ -237,3 +237,13 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Linha de "Novas mensagens"** ao entrar num canal com mensagens que você ainda não viu, e também quando chegam com a janela sem foco. **Botão direito no canal** marca como lido.
 - **Rascunho por canal**: o que você estava digitando fica guardado ao trocar de canal (inclusive ao reabrir o app) e some ao enviar.
 - Colar imagem (Ctrl+V) já funcionava desde antes: a imagem é enviada como anexo.
+
+## v0.17.0
+
+- **Mensagens assinadas**: cada pessoa tem um par de chaves por sala (Ed25519), guardado neste computador de um jeito que o app usa mas ninguém consegue copiar. Mensagens, edições e arquivos saem assinados e todo mundo confere: selo de escudo quando está certo, destaque vermelho se a assinatura não bate, aviso amarelo se uma pessoa que sempre assina mandou algo sem assinatura. Assim nem o host, nem quem guarda uma cópia da sala, consegue fazer uma mensagem aparecer como sendo de outra pessoa. Quem ainda está num app antigo continua falando normalmente, sem selo.
+- **Chave fixada**: a chave de cada pessoa fica guardada no primeiro contato. Se ela mudar depois, o app avisa; o menu da pessoa (botão direito) tem "Confiar na nova chave". Quem trocou de computador precisa que o dono ou um moderador use "Liberar chaves de segurança" no menu dela.
+- **Conversas diretas cifradas de ponta a ponta** (botão de balão no nome do membro, ou botão direito → Mensagem direta). Só texto, até 3000 caracteres, sem arquivos nem edição nem fixar. O host e as cópias guardam apenas o texto cifrado; a outra pessoa da sala nem vê que a conversa existe. No topo há um código de segurança: se os dois virem o mesmo código (por ligação ou pessoalmente), ninguém está no meio. Limite honesto: o host ainda enxerga quem fala com quem e quando.
+- **Cargos**: o dono pode tornar alguém **moderador**. Moderadores apagam mensagens de membros, expulsam e banem membros comuns e liberam chaves. Só o dono promove, convida e mexe em canais.
+- **Expulsar ou banir**: banir bloqueia a chave de segurança da pessoa, então o mesmo computador não volta nem com convite novo. Se a pessoa apagar os dados do app e gerar uma chave nova, um convite ainda deixa ela entrar; a proteção real é só convidar quem você conhece.
+- **Convites abertos**: o dono vê os convites que ainda valem (usos e validade) e pode revogar.
+- **Apagar sala**: na lista "Suas salas", o botão de lixeira ao lado de uma sala que você hospeda apaga os dados dela neste computador (com confirmação do sistema). Quem tem cópia como sucessor continua com a dele.

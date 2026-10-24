@@ -11,7 +11,9 @@ const crypto = require('node:crypto');
 const rid = (bytes = 8) => crypto.randomBytes(bytes).toString('hex');
 
 const MAX_CHANNELS = 30;
-const CHANNEL_TYPES = ['text', 'voice'];
+const CHANNEL_TYPES = ['text', 'voice', 'dm'];
+const ID12 = /^[a-f0-9]{12}$/;
+const MAX_DM_CIPHER = 20000; // texto cifrado (base64) é maior que o original
 
 function slugChannel(raw) {
   return String(raw ?? '')
@@ -25,6 +27,22 @@ function slugChannel(raw) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 24);
 }
+
+// Ed25519: a chave pública chega crua (32 bytes em base64); o Node precisa dela no formato SPKI.
+const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex');
+function verifySig(pubB64, payload, sigB64) {
+  try {
+    const raw = Buffer.from(String(pubB64), 'base64');
+    const sig = Buffer.from(String(sigB64), 'base64');
+    if (raw.length !== 32 || sig.length !== 64) return false;
+    const key = crypto.createPublicKey({ key: Buffer.concat([SPKI_ED25519, raw]), format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(String(payload), 'utf8'), key, sig);
+  } catch {
+    return false;
+  }
+}
+const isKey32 = (s) => typeof s === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(s); // 32 bytes em base64
+const keyHash = (pub) => crypto.createHash('sha256').update(String(pub)).digest('hex').slice(0, 32);
 
 const hashToken = (t) => crypto.createHash('sha256').update(String(t || '')).digest('hex');
 
@@ -48,7 +66,7 @@ class Store {
 
     this._normalizeChannels();
     this.messages = new Map();
-    for (const ch of this.state.channels) if (ch.type === 'text') this.messages.set(ch.id, []);
+    for (const ch of this.state.channels) if (ch.type === 'text' || ch.type === 'dm') this.messages.set(ch.id, []);
     this._loadMessages();
     if (!Number.isInteger(this.state.room.epoch) || this.state.room.epoch < 1) this.state.room.epoch = 1;
     if (!this.state.room.lineage) this.state.room.lineage = rid(6);
@@ -75,6 +93,8 @@ class Store {
       edits: {},
       deleted: {},
       pins: {},
+      sigs: {}, // assinaturas de mensagens com arquivo (assinadas depois do envio)
+      banned: {}, // hash da chave pública -> { name, at }
       rendezvous: null,
     };
     try {
@@ -160,7 +180,73 @@ class Store {
     if (u.avatar) out.avatar = u.avatar;
     if (u.status && u.status !== 'online') out.status = u.status;
     if (u.statusText) out.statusText = u.statusText;
+    if (u.pub) out.pub = u.pub;
+    if (u.dh) out.dh = u.dh;
+    if (u.pubAt) out.pubAt = u.pubAt;
     return out;
+  }
+
+  // Chaves do membro: pub (assina mensagens, Ed25519) e dh (conversas diretas, X25519). Uma vez registradas não
+  // mudam sozinhas: quem trocar de computador precisa que o dono ou um moderador libere (resetKeys).
+  setKeys(u, { pub, dh } = {}) {
+    const bad = (m) => Object.assign(new Error(m), { keys: true });
+    if (pub !== undefined && pub !== null) {
+      if (!isKey32(pub)) throw bad('chave inválida');
+      if (u.pub && u.pub !== pub) throw bad('esta conta já tem uma chave registrada');
+      if (this.isBanned(pub)) throw bad('você foi banido desta sala');
+      if (!u.pub) {
+        u.pub = pub;
+        u.pubAt = Date.now();
+      }
+    }
+    if (dh !== undefined && dh !== null) {
+      if (!isKey32(dh)) throw bad('chave inválida');
+      if (u.dh && u.dh !== dh) throw bad('esta conta já tem uma chave registrada');
+      u.dh = dh;
+    }
+    this.save();
+    return u;
+  }
+
+  resetKeys(u) {
+    delete u.pub;
+    delete u.pubAt;
+    delete u.dh;
+    this.save();
+  }
+
+  isBanned(pub) {
+    return !!pub && !!this.state.banned[keyHash(pub)];
+  }
+
+  // expulsar e impedir de voltar com a mesma chave (convite novo + chave nova ainda entra: o convite é a porta)
+  banUser(id) {
+    const u = this.state.users[id];
+    if (!u) return false;
+    if (u.pub) this.state.banned[keyHash(u.pub)] = { name: u.name, at: Date.now() };
+    return this.removeUser(id);
+  }
+
+  setRole(id, role) {
+    const u = this.state.users[id];
+    if (!u || u.role === 'owner' || !['mod', 'member'].includes(role)) return false;
+    u.role = role;
+    this.save();
+    return true;
+  }
+
+  listInvites() {
+    const now = Date.now();
+    return Object.values(this.state.invites)
+      .filter((i) => i.expiresAt >= now)
+      .map((i) => ({ token: i.token, uses: i.uses, maxUses: i.maxUses, createdAt: i.createdAt, expiresAt: i.expiresAt }));
+  }
+
+  revokeInvite(token) {
+    if (!this.state.invites[token]) return false;
+    delete this.state.invites[token];
+    this.save();
+    return true;
   }
 
   // Perfil: cor, avatar (imagem pequena), situação e frase. Valida tudo; campos ausentes ficam como estão.
@@ -321,7 +407,8 @@ class Store {
       if (!this.hasChannel(raw.channel, 'text')) continue;
       const ts = Number(raw.ts);
       if (!Number.isFinite(ts) || ts <= 0 || ts > Date.now() + 86400000) continue;
-      const text = typeof raw.text === 'string' ? raw.text.slice(0, maxLength) : '';
+      const isDm = (this.getChannel(raw.channel) || {}).type === 'dm';
+      const text = typeof raw.text === 'string' ? raw.text.slice(0, isDm ? MAX_DM_CIPHER : maxLength) : '';
       const attachments = (Array.isArray(raw.attachments) ? raw.attachments : [])
         .filter((a) => a && /^[a-f0-9]{24}$/.test(String(a.id)))
         .slice(0, 10)
@@ -331,6 +418,10 @@ class Store {
         msg.replyTo = { id: String(raw.replyTo.id || '').slice(0, 24), author: String(raw.replyTo.author || '').slice(0, 40), text: String(raw.replyTo.text || '').slice(0, 200) };
       }
       if (Array.isArray(raw.mentions)) msg.mentions = raw.mentions.map(String).slice(0, 20);
+      if (typeof raw.sig === 'string' && typeof raw.nonce === 'string') {
+        msg.nonce = raw.nonce.slice(0, 64);
+        msg.sig = raw.sig.slice(0, 100);
+      }
       known.add(id);
       lines.push(JSON.stringify(msg));
       const arr = this.messages.get(msg.channel);
@@ -363,6 +454,11 @@ class Store {
       st.users[id] = { id, name, role: 'member', tokenHash: String(u.tokenHash), createdAt: Number(u.createdAt) || Date.now() };
       try {
         this.setProfile(st.users[id], { color: u.color || null, avatar: u.avatar || null, status: u.status || 'online', statusText: u.statusText || '' });
+        if (isKey32(u.pub)) {
+          st.users[id].pub = u.pub;
+          st.users[id].pubAt = Number(u.pubAt) || Date.now();
+        }
+        if (isKey32(u.dh)) st.users[id].dh = u.dh;
       } catch {
         /* perfil inválido na cópia: ignora */
       }
@@ -370,8 +466,15 @@ class Store {
     }
     for (const c of Array.isArray(other.channels) ? other.channels : []) {
       if (!c || !CHANNEL_TYPES.includes(c.type)) continue;
+      if (c.type === 'dm') {
+        const mem = Array.isArray(c.members) ? c.members.map(String) : [];
+        if (mem.length !== 2 || !mem.every((x) => ID12.test(x)) || mem[0] === mem[1] || c.id !== this.dmId(mem[0], mem[1]) || this.hasChannel(c.id)) continue;
+        st.channels.push({ id: c.id, name: 'dm', type: 'dm', members: [...mem].sort() });
+        this.messages.set(c.id, []);
+        continue;
+      }
       const id = slugChannel(c.id);
-      if (!id || id !== c.id || this.hasChannel(id) || st.channels.length >= MAX_CHANNELS) continue;
+      if (!id || id !== c.id || this.hasChannel(id) || st.channels.filter((x) => x.type !== 'dm').length >= MAX_CHANNELS) continue;
       st.channels.push({ id, name: id, type: c.type });
       if (c.type === 'text') this.messages.set(id, []);
     }
@@ -381,7 +484,19 @@ class Store {
     }
     for (const [id, e] of Object.entries(own(other.edits))) {
       if (!e || typeof e.text !== 'string') continue;
-      if (!st.edits[id] || (Number(e.at) || 0) > st.edits[id].at) st.edits[id] = { text: e.text.slice(0, 4000), at: Number(e.at) || Date.now() };
+      if (!st.edits[id] || (Number(e.at) || 0) > st.edits[id].at) {
+        st.edits[id] = { text: e.text.slice(0, 4000), at: Number(e.at) || Date.now() };
+        if (typeof e.sig === 'string' && typeof e.nonce === 'string') {
+          st.edits[id].nonce = e.nonce.slice(0, 64);
+          st.edits[id].sig = e.sig.slice(0, 100);
+        }
+      }
+    }
+    for (const [id, g] of Object.entries(own(other.sigs))) {
+      if (/^[a-f0-9]{16}$/.test(id) && !st.sigs[id] && g && typeof g.sig === 'string' && typeof g.nonce === 'string') st.sigs[id] = { nonce: g.nonce.slice(0, 64), sig: g.sig.slice(0, 100) };
+    }
+    for (const [h, b] of Object.entries(own(other.banned))) {
+      if (/^[a-f0-9]{32}$/.test(h) && !st.banned[h]) st.banned[h] = { name: String((b || {}).name || '').slice(0, 24), at: Number((b || {}).at) || Date.now() };
     }
     for (const id of Object.keys(own(other.deleted))) if (/^[a-f0-9]{16}$/.test(id)) st.deleted[id] = true;
     for (const [id, p] of Object.entries(own(other.pins))) {
@@ -512,8 +627,40 @@ class Store {
   }
 
   // type é opcional: sem ele, basta o canal existir.
+  // 'text' também vale para conversa direta (dm): as duas guardam mensagens
   hasChannel(id, type) {
-    return this.state.channels.some((c) => c.id === id && (!type || c.type === type));
+    return this.state.channels.some((c) => c.id === id && (!type || c.type === type || (type === 'text' && c.type === 'dm')));
+  }
+
+  getChannel(id) {
+    return this.state.channels.find((c) => c.id === id) || null;
+  }
+
+  // só quem participa enxerga uma conversa direta
+  canSee(userId, channelId) {
+    const ch = this.getChannel(channelId);
+    if (!ch) return false;
+    return ch.type !== 'dm' || (ch.members || []).includes(userId);
+  }
+
+  channelsFor(userId) {
+    return this.state.channels.filter((c) => c.type !== 'dm' || (c.members || []).includes(userId));
+  }
+
+  dmId(a, b) {
+    return 'dm-' + [a, b].sort().join('-');
+  }
+
+  addDm(a, b) {
+    if (!ID12.test(a) || !ID12.test(b) || a === b) throw new Error('conversa inválida');
+    const id = this.dmId(a, b);
+    let ch = this.getChannel(id);
+    if (ch) return { channel: ch, created: false };
+    ch = { id, name: 'dm', type: 'dm', members: [a, b].sort() };
+    this.state.channels.push(ch);
+    this.messages.set(id, []);
+    this.save();
+    return { channel: ch, created: true };
   }
 
   addChannel(rawName, type = 'text') {
@@ -521,7 +668,7 @@ class Store {
     const name = slugChannel(rawName);
     if (!name) throw new Error('nome de canal inválido');
     if (this.hasChannel(name)) throw new Error('já existe um canal com esse nome');
-    if (this.state.channels.length >= MAX_CHANNELS) throw new Error('limite de canais atingido');
+    if (this.state.channels.filter((c) => c.type !== 'dm').length >= MAX_CHANNELS) throw new Error('limite de canais atingido');
     const ch = { id: name, name, type };
     this.state.channels.push(ch);
     if (type === 'text') this.messages.set(ch.id, []);
@@ -530,7 +677,7 @@ class Store {
   }
 
   // ---- mensagens ----
-  addMessage({ channel, user, text, attachments, replyTo, mentions }) {
+  addMessage({ channel, user, text, attachments, replyTo, mentions, nonce, sig }) {
     const msg = {
       id: rid(8),
       channel,
@@ -542,6 +689,10 @@ class Store {
     };
     if (replyTo) msg.replyTo = replyTo; // { id, author, text }: resumo da mensagem respondida
     if (mentions && mentions.length) msg.mentions = mentions;
+    if (sig && nonce) {
+      msg.nonce = String(nonce).slice(0, 64);
+      msg.sig = String(sig).slice(0, 100);
+    }
     fs.appendFileSync(this.messagesPath, JSON.stringify(msg) + '\n');
     this.rev += 1;
     if (!this.messages.has(channel)) this.messages.set(channel, []);
@@ -558,12 +709,24 @@ class Store {
     if (st.edits[m.id]) {
       out.text = st.edits[m.id].text;
       out.editedAt = st.edits[m.id].at;
+      if (st.edits[m.id].sig) {
+        out.editNonce = st.edits[m.id].nonce;
+        out.editSig = st.edits[m.id].sig;
+      }
+    }
+    if (!m.sig && st.sigs[m.id]) {
+      out.nonce = st.sigs[m.id].nonce;
+      out.sig = st.sigs[m.id].sig;
     }
     if (st.deleted[m.id]) {
       out.deleted = true;
       out.text = '';
       out.attachments = [];
       delete out.reactions;
+      delete out.sig;
+      delete out.nonce;
+      delete out.editSig;
+      delete out.editNonce;
     }
     if (st.pins[m.id]) out.pinned = true;
     return out;
@@ -574,11 +737,15 @@ class Store {
     return m ? this.decorate(m) : null;
   }
 
-  editMessage(id, userId, text) {
+  editMessage(id, userId, text, { nonce, sig } = {}) {
     const m = this._findMessage(id);
     if (!m || this.state.deleted[id]) return null;
     if (m.userId !== userId) return 'forbidden';
     this.state.edits[id] = { text, at: Date.now() };
+    if (nonce && sig) {
+      this.state.edits[id].nonce = String(nonce).slice(0, 64);
+      this.state.edits[id].sig = String(sig).slice(0, 100);
+    }
     this.save();
     return this.decorate(m);
   }
@@ -586,11 +753,22 @@ class Store {
   deleteMessage(id, user) {
     const m = this._findMessage(id);
     if (!m) return null;
-    if (m.userId !== user.id && user.role !== 'owner') return 'forbidden';
+    const author = this.state.users[m.userId];
+    const mayModerate = user.role === 'owner' || (user.role === 'mod' && (!author || author.role === 'member'));
+    if (m.userId !== user.id && !mayModerate) return 'forbidden';
     this.state.deleted[id] = true;
     delete this.state.pins[id];
     this.save();
     return this.decorate(m);
+  }
+
+  // assinatura de mensagem com arquivo (o texto é vazio; o que vale é a lista de anexos)
+  setFileSig(id, nonce, sig) {
+    const m = this._findMessage(id);
+    if (!m || m.sig || this.state.sigs[id]) return false;
+    this.state.sigs[id] = { nonce: String(nonce).slice(0, 64), sig: String(sig).slice(0, 100) };
+    this.save();
+    return true;
   }
 
   togglePin(id, userId) {
@@ -615,6 +793,7 @@ class Store {
     const out = [];
     for (const [ch, list] of this.messages) {
       if (channel && ch !== channel) continue;
+      if ((this.getChannel(ch) || {}).type === 'dm') continue; // conversa direta é cifrada: não dá para buscar
       for (let i = list.length - 1; i >= 0; i--) {
         const d = this.decorate(list[i]);
         if (d.deleted) continue;
@@ -689,4 +868,4 @@ class Store {
   }
 }
 
-module.exports = { Store, slugChannel, rid };
+module.exports = { Store, slugChannel, rid, verifySig, isKey32, MAX_DM_CIPHER };

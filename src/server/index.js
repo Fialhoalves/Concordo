@@ -7,7 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
-const { Store } = require('./store');
+const { Store, verifySig, isKey32, MAX_DM_CIPHER } = require('./store');
+const Sig = require('../shared/sig');
 const Invite = require('../shared/invite');
 const Reactions = require('../shared/reactions');
 const Rendezvous = require('../main/rendezvous');
@@ -117,6 +118,20 @@ async function createConcordoServer(opts = {}) {
     }
   }
 
+  // Eventos de um canal: conversa direta só vai para as duas pessoas.
+  function broadcastCh(channelId, payload) {
+    const ch = store.getChannel(channelId);
+    if (!ch || ch.type !== 'dm') return broadcast(payload);
+    const data = JSON.stringify(payload);
+    for (const id of ch.members || []) for (const ws of clients.get(id) || []) if (ws.readyState === OPEN) ws.send(data);
+  }
+
+  // Quem tem chave registrada precisa assinar; quem ainda não tem (app antigo) passa sem assinatura.
+  function checkSig(user, payload, sig) {
+    if (!user.pub) return true;
+    return Sig.isB64(sig) && verifySig(user.pub, payload, sig);
+  }
+
   // ---- voz: quem está em qual sala de voz (só em memória) ----
   const voice = new Map(); // userId -> { ws, channel, muted, deafened, cam, screen }
 
@@ -204,8 +219,13 @@ async function createConcordoServer(opts = {}) {
     if (user.role !== 'owner') throw httpError(403, 'só o dono da sala pode fazer isso');
   }
 
+  function requireMod(user) {
+    if (user.role !== 'owner' && user.role !== 'mod') throw httpError(403, 'só o dono ou um moderador pode fazer isso');
+  }
+
   async function handleUpload(req, res, user, channelId, url) {
-    if (!store.hasChannel(channelId, 'text')) throw httpError(404, 'canal não encontrado');
+    if (!store.hasChannel(channelId, 'text') || !store.canSee(user.id, channelId)) throw httpError(404, 'canal não encontrado');
+    if (store.getChannel(channelId).type === 'dm') throw httpError(400, 'arquivos ainda não são aceitos em conversas diretas');
     const name = cleanFileName(url.searchParams.get('name'));
     const len = Number(req.headers['content-length']);
     if (!Number.isFinite(len) || len <= 0) throw httpError(411, 'tamanho do arquivo não informado');
@@ -299,11 +319,15 @@ async function createConcordoServer(opts = {}) {
       const name = cleanName(body.name);
       if (!name) throw httpError(400, 'informe um apelido');
       if (store.nameTaken(name)) throw httpError(409, 'esse apelido já está em uso nesta sala');
+      if (body.pub !== undefined && !isKey32(body.pub)) throw httpError(400, 'chave inválida');
+      if (body.dh !== undefined && !isKey32(body.dh)) throw httpError(400, 'chave inválida');
+      if (body.pub && store.isBanned(body.pub)) throw httpError(403, 'você foi banido desta sala');
       if (!store.consumeInvite(body.invite)) {
         joinFailures.push(Date.now());
         throw httpError(403, 'convite inválido, expirado ou já usado');
       }
       const user = store.createUser(name);
+      if (body.pub || body.dh) store.setKeys(user, { pub: body.pub, dh: body.dh });
       broadcast({ t: 'user', user: pub(user) });
       broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null, succession: store.succession() }); // o sucessor padrão é o primeiro a entrar
       return sendJson(res, 201, { token: user.token, user: pub(user), room: store.room });
@@ -322,7 +346,7 @@ async function createConcordoServer(opts = {}) {
       return sendJson(res, 200, {
         room: store.room,
         you: pub(user),
-        channels: store.channels,
+        channels: store.channelsFor(user.id),
         users: store.users().map(pub),
         online: online(),
         limits: { maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH, maxVoice: MAX_VOICE },
@@ -335,7 +359,7 @@ async function createConcordoServer(opts = {}) {
 
     let m = p.match(/^\/api\/channels\/([a-z0-9_-]+)\/messages$/);
     if (method === 'GET' && m) {
-      if (!store.hasChannel(m[1], 'text')) throw httpError(404, 'canal não encontrado');
+      if (!store.hasChannel(m[1], 'text') || !store.canSee(user.id, m[1])) throw httpError(404, 'canal não encontrado');
       const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit'), 10) || 50));
       const before = url.searchParams.get('before') || undefined;
       const around = url.searchParams.get('around') || undefined;
@@ -344,7 +368,7 @@ async function createConcordoServer(opts = {}) {
 
     m = p.match(/^\/api\/channels\/([a-z0-9_-]+)\/pins$/);
     if (method === 'GET' && m) {
-      if (!store.hasChannel(m[1], 'text')) throw httpError(404, 'canal não encontrado');
+      if (!store.hasChannel(m[1], 'text') || !store.canSee(user.id, m[1])) throw httpError(404, 'canal não encontrado');
       return sendJson(res, 200, { messages: store.pinsOf(m[1]) });
     }
 
@@ -460,26 +484,51 @@ async function createConcordoServer(opts = {}) {
       const body = await readJson(req);
       const text = typeof body.text === 'string' ? body.text.trim() : '';
       if (!text || text.length > MAX_MESSAGE_LENGTH) throw httpError(400, 'mensagem inválida');
-      const r = store.editMessage(m[1], user.id, text);
+      const orig = store.getMessage(m[1]);
+      if (!orig) throw httpError(404, 'mensagem não encontrada');
+      if (!store.canSee(user.id, orig.channel)) throw httpError(404, 'mensagem não encontrada');
+      if ((store.getChannel(orig.channel) || {}).type === 'dm') throw httpError(400, 'mensagens de conversa direta não podem ser editadas');
+      const nonce = typeof body.nonce === 'string' ? body.nonce.slice(0, 64) : '';
+      const sig = typeof body.sig === 'string' ? body.sig : '';
+      if (!checkSig(user, Sig.editPayload({ room: store.room.id, id: m[1], user: user.id, nonce, text }), sig)) throw httpError(400, 'assinatura inválida');
+      const r = store.editMessage(m[1], user.id, text, user.pub ? { nonce, sig } : {});
       if (!r) throw httpError(404, 'mensagem não encontrada');
       if (r === 'forbidden') throw httpError(403, 'só quem enviou pode editar');
-      broadcast({ t: 'msg_update', message: r });
+      broadcastCh(r.channel, { t: 'msg_update', message: r });
       return sendJson(res, 200, { message: r });
     }
     if (m && method === 'DELETE') {
+      const orig = store.getMessage(m[1]);
+      if (orig && !store.canSee(user.id, orig.channel)) throw httpError(404, 'mensagem não encontrada');
       const r = store.deleteMessage(m[1], user);
       if (!r) throw httpError(404, 'mensagem não encontrada');
-      if (r === 'forbidden') throw httpError(403, 'só quem enviou ou o dono pode apagar');
-      broadcast({ t: 'msg_update', message: r });
+      if (r === 'forbidden') throw httpError(403, 'só quem enviou, o dono ou um moderador pode apagar');
+      broadcastCh(r.channel, { t: 'msg_update', message: r });
       return sendJson(res, 200, { message: r });
+    }
+
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)\/sig$/);
+    if (method === 'POST' && m) {
+      // assinatura de mensagem com arquivo: feita depois do envio, quando o id do arquivo já existe
+      const body = await readJson(req);
+      const orig = store.getMessage(m[1]);
+      if (!orig || orig.userId !== user.id || !orig.attachments.length) throw httpError(404, 'mensagem não encontrada');
+      const nonce = typeof body.nonce === 'string' ? body.nonce.slice(0, 64) : '';
+      const payload = Sig.filePayload({ room: store.room.id, id: orig.id, channel: orig.channel, user: user.id, nonce, attachments: orig.attachments });
+      if (!user.pub || !Sig.isB64(body.sig) || !verifySig(user.pub, payload, body.sig)) throw httpError(400, 'assinatura inválida');
+      if (!store.setFileSig(orig.id, nonce, body.sig)) throw httpError(409, 'mensagem já assinada');
+      broadcastCh(orig.channel, { t: 'msg_update', message: store.getMessage(orig.id) });
+      return sendJson(res, 200, { ok: true });
     }
 
     m = p.match(/^\/api\/messages\/([a-f0-9]+)\/pin$/);
     if (method === 'POST' && m) {
+      const orig0 = store.getMessage(m[1]);
+      if (orig0 && (store.getChannel(orig0.channel) || {}).type === 'dm') throw httpError(400, 'não dá para fixar mensagens de conversa direta');
       const r = store.togglePin(m[1], user.id);
       if (!r) throw httpError(404, 'mensagem não encontrada');
       if (r === 'limit') throw httpError(400, 'limite de mensagens fixadas atingido');
-      broadcast({ t: 'msg_update', message: r });
+      broadcastCh(r.channel, { t: 'msg_update', message: r });
       return sendJson(res, 200, { message: r });
     }
 
@@ -487,9 +536,11 @@ async function createConcordoServer(opts = {}) {
     if (method === 'POST' && m) {
       const body = await readJson(req);
       if (!Reactions.isValid(body.key)) throw httpError(400, 'reação inválida');
+      const orig1 = store.getMessage(m[1]);
+      if (orig1 && !store.canSee(user.id, orig1.channel)) throw httpError(404, 'mensagem não encontrada');
       const r = store.toggleReaction(m[1], user.id, body.key);
       if (!r) throw httpError(404, 'mensagem não encontrada');
-      broadcast({ t: 'reaction', id: m[1], channel: r.channel, reactions: r.reactions });
+      broadcastCh(r.channel, { t: 'reaction', id: m[1], channel: r.channel, reactions: r.reactions });
       return sendJson(res, 200, { ok: true, reactions: r.reactions });
     }
 
@@ -503,22 +554,74 @@ async function createConcordoServer(opts = {}) {
       const patch = {};
       for (const k of ['color', 'status', 'statusText', 'avatar']) if (k in body) patch[k] = body[k];
       try {
+        if ('pub' in body || 'dh' in body) store.setKeys(user, { pub: body.pub, dh: body.dh });
         store.setProfile(user, patch);
       } catch (e) {
-        throw httpError(400, e.message);
+        throw httpError(e.keys ? 409 : 400, e.message);
       }
       broadcast({ t: 'user', user: pub(user) });
       broadcast({ t: 'presence', online: online() });
       return sendJson(res, 200, { user: pub(user) });
     }
 
-    m = p.match(/^\/api\/users\/([a-f0-9]+)$/);
+    m = p.match(/^\/api\/users\/([a-f0-9]+)\/role$/);
+    if (method === 'POST' && m) {
+      requireOwner(user);
+      const body = await readJson(req);
+      const target = store.getUser(m[1]);
+      if (!target) throw httpError(404, 'usuário não encontrado');
+      if (!store.setRole(target.id, body.role)) throw httpError(400, 'cargo inválido');
+      broadcast({ t: 'user', user: pub(target) });
+      return sendJson(res, 200, { user: pub(target) });
+    }
+
+    m = p.match(/^\/api\/users\/([a-f0-9]+)\/reset-keys$/);
+    if (method === 'POST' && m) {
+      requireMod(user);
+      const target = store.getUser(m[1]);
+      if (!target) throw httpError(404, 'usuário não encontrado');
+      if (target.role === 'owner' || (user.role === 'mod' && target.role !== 'member')) throw httpError(403, 'sem permissão para esse usuário');
+      store.resetKeys(target);
+      broadcast({ t: 'user', user: pub(target) });
+      return sendJson(res, 200, { user: pub(target) });
+    }
+
+    if (method === 'GET' && p === '/api/invites') {
+      requireOwner(user);
+      return sendJson(res, 200, { invites: store.listInvites() });
+    }
+    m = p.match(/^\/api\/invites\/([a-f0-9]+)$/);
     if (method === 'DELETE' && m) {
       requireOwner(user);
+      if (!store.revokeInvite(m[1])) throw httpError(404, 'convite não encontrado');
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && p === '/api/dms') {
+      const body = await readJson(req);
+      const other = store.getUser(String(body.userId || ''));
+      if (!other || other.id === user.id) throw httpError(400, 'usuário inválido');
+      if (!user.dh || !other.dh) throw httpError(409, other.dh ? 'seu app ainda não registrou a chave de conversa direta' : `${other.name} ainda não atualizou o app para conversas diretas`);
+      let r;
+      try {
+        r = store.addDm(user.id, other.id);
+      } catch (e) {
+        throw httpError(400, e.message);
+      }
+      if (r.created) broadcastCh(r.channel.id, { t: 'channel', channel: r.channel });
+      return sendJson(res, r.created ? 201 : 200, { channel: r.channel });
+    }
+
+    m = p.match(/^\/api\/users\/([a-f0-9]+)$/);
+    if (method === 'DELETE' && m) {
+      requireMod(user);
       const target = store.getUser(m[1]);
       if (!target) throw httpError(404, 'usuário não encontrado');
       if (target.id === user.id) throw httpError(400, 'você não pode remover a si mesmo');
-      store.removeUser(target.id);
+      if (target.role === 'owner' || (user.role === 'mod' && target.role !== 'member')) throw httpError(403, 'sem permissão para remover essa pessoa');
+      const ban = url.searchParams.get('ban') === '1';
+      if (ban) store.banUser(target.id);
+      else store.removeUser(target.id);
       voice.delete(target.id);
       for (const ws of clients.get(target.id) || []) ws.close(4001, 'removido');
       clients.delete(target.id);
@@ -526,7 +629,7 @@ async function createConcordoServer(opts = {}) {
       broadcast({ t: 'heir', id: (store.getHeir() || {}).id || null, succession: store.succession() });
       broadcastVoice();
       broadcast({ t: 'presence', online: online() });
-      return sendJson(res, 200, { ok: true });
+      return sendJson(res, 200, { ok: true, banned: ban && !!target.pub });
     }
 
     throw httpError(404, 'rota não encontrada');
@@ -650,9 +753,13 @@ async function createConcordoServer(opts = {}) {
       }
 
       if (data.t === 'typing') {
-        if (!store.hasChannel(data.channel, 'text') || !store.getUser(user.id)) return;
+        if (!store.hasChannel(data.channel, 'text') || !store.getUser(user.id) || !store.canSee(user.id, data.channel)) return;
         const out = JSON.stringify({ t: 'typing', channel: data.channel, user: user.id });
-        for (const [id, set] of clients) if (id !== user.id) for (const w of set) if (w.readyState === OPEN) w.send(out);
+        const dmCh = store.getChannel(data.channel);
+        for (const [id, set] of clients) {
+          if (id === user.id || (dmCh.type === 'dm' && !(dmCh.members || []).includes(id))) continue;
+          for (const w of set) if (w.readyState === OPEN) w.send(out);
+        }
         return;
       }
 
@@ -669,22 +776,32 @@ async function createConcordoServer(opts = {}) {
 
       if (data.t === 'msg') {
         const text = typeof data.text === 'string' ? data.text.trim() : '';
-        if (!text || text.length > MAX_MESSAGE_LENGTH || !store.hasChannel(data.channel, 'text')) {
+        const chan = store.getChannel(data.channel);
+        const isDm = !!chan && chan.type === 'dm';
+        if (!text || text.length > (isDm ? MAX_DM_CIPHER : MAX_MESSAGE_LENGTH) || !store.hasChannel(data.channel, 'text') || !store.canSee(user.id, data.channel)) {
           return ws.send(JSON.stringify({ t: 'error', message: 'mensagem inválida' }));
         }
+        if (isDm && !/^enc1:[A-Za-z0-9+/=_-]+$/.test(text)) {
+          return ws.send(JSON.stringify({ t: 'error', message: 'conversa direta só aceita mensagens cifradas' }));
+        }
         if (!store.getUser(user.id)) return; // removido enquanto conectado
+        const nonce = typeof data.nonce === 'string' ? data.nonce.slice(0, 64) : '';
+        const replyId = typeof data.replyTo === 'string' && !isDm ? data.replyTo : '';
+        if (!checkSig(user, Sig.msgPayload({ room: store.room.id, channel: data.channel, user: user.id, nonce, text, replyTo: replyId }), data.sig)) {
+          return ws.send(JSON.stringify({ t: 'error', message: 'assinatura inválida: atualize o app' }));
+        }
         if (!allowMessage(user.id)) {
           return ws.send(JSON.stringify({ t: 'error', message: 'devagar! muitas mensagens seguidas' }));
         }
         let replyTo;
-        if (typeof data.replyTo === 'string') {
+        if (replyId) {
           const orig = store.getMessage(data.replyTo);
           if (orig && !orig.deleted && orig.channel === data.channel) {
             replyTo = { id: orig.id, author: orig.author, text: (orig.text || (orig.attachments[0] ? orig.attachments[0].name : '')).slice(0, 120) };
           }
         }
-        const message = store.addMessage({ channel: data.channel, user, text, replyTo, mentions: findMentions(text) });
-        broadcast({ t: 'msg', message });
+        const message = store.addMessage({ channel: data.channel, user, text, replyTo, mentions: isDm ? [] : findMentions(text), nonce: user.pub ? nonce : '', sig: user.pub ? data.sig : '' });
+        broadcastCh(data.channel, { t: 'msg', message });
       }
     });
 
