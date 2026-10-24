@@ -247,3 +247,8 @@ Cópias que se afastam passam a se juntar sem perder nada, e a sala sabe se já 
 - **Expulsar ou banir**: banir bloqueia a chave de segurança da pessoa, então o mesmo computador não volta nem com convite novo. Se a pessoa apagar os dados do app e gerar uma chave nova, um convite ainda deixa ela entrar; a proteção real é só convidar quem você conhece.
 - **Convites abertos**: o dono vê os convites que ainda valem (usos e validade) e pode revogar.
 - **Apagar sala**: na lista "Suas salas", o botão de lixeira ao lado de uma sala que você hospeda apaga os dados dela neste computador (com confirmação do sistema). Quem tem cópia como sucessor continua com a dele.
+
+## v0.18.0
+
+- **Enquetes**: botão de gráfico ao lado do campo de mensagem. Pergunta, de 2 a 6 opções e, se quiser, "mais de uma resposta". Clique numa opção para votar (clique de novo para tirar o voto); passe o mouse para ver quem votou. Quem criou (ou o dono/moderador) pode encerrar. A enquete em si é assinada como qualquer mensagem; **os votos não são assinados**, então quem hospeda a sala poderia, tecnicamente, alterar a contagem.
+- **Soundboard**: na chamada, o botão de alto-falante toca um som para todo mundo (buzina, tambor, palmas, trombone triste, sirene, sino, laser, tada). Só o id do som viaja pela rede; cada computador sintetiza o som localmente, então não há arquivos nem uso de dados. Intervalo de 1,5 s entre sons; dá para desligar e ajustar o volume em Configurações de voz. Sons enviados pelos próprios usuários ainda não existem.

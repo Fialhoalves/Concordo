@@ -575,3 +575,22 @@ a { color: var(--concordo-violet-light); }
 .main.is-dm [data-act="pins"] { display: none; }
 .msg.sig-missing { box-shadow: inset 3px 0 0 var(--warn); border-radius: 4px; }
 .section[hidden] { display: none; }
+
+/* v0.18: enquetes e soundboard */
+.poll { margin-top: 6px; max-width: 460px; display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
+.poll-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+.poll-opt { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; overflow: hidden; }
+.poll-opt:hover:not(:disabled) { border-color: var(--accent); }
+.poll-opt:disabled { cursor: default; }
+.poll-opt.mine { border-color: var(--accent); font-weight: 600; }
+.poll-bar { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--accent) 22%, transparent); z-index: 0; transition: width .25s; }
+.poll-label, .poll-count { position: relative; z-index: 1; }
+.poll-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.poll-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.poll.closed { opacity: .85; }
+.main.is-dm [data-act="poll"] { display: none; }
+.main.is-voice [data-act="poll"] { display: none; }
+.sb-picker { position: fixed; z-index: 60; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; padding: 8px; border-radius: var(--radius-md, 10px); border: 1px solid var(--line); background: var(--panel-2); box-shadow: var(--shadow-pop); width: 260px; }
+.sb-opt { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.sb-opt:hover { border-color: var(--accent); background: var(--panel); }
+.sb-emoji { font-size: 20px; }

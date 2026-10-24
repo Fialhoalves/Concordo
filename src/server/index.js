@@ -7,7 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
-const { Store, verifySig, isKey32, MAX_DM_CIPHER } = require('./store');
+const { Store, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER } = require('./store');
+const Soundboard = require('../shared/soundboard');
 const Sig = require('../shared/sig');
 const Invite = require('../shared/invite');
 const Reactions = require('../shared/reactions');
@@ -488,6 +489,7 @@ async function createConcordoServer(opts = {}) {
       if (!orig) throw httpError(404, 'mensagem não encontrada');
       if (!store.canSee(user.id, orig.channel)) throw httpError(404, 'mensagem não encontrada');
       if ((store.getChannel(orig.channel) || {}).type === 'dm') throw httpError(400, 'mensagens de conversa direta não podem ser editadas');
+      if (orig.poll) throw httpError(400, 'enquetes não podem ser editadas');
       const nonce = typeof body.nonce === 'string' ? body.nonce.slice(0, 64) : '';
       const sig = typeof body.sig === 'string' ? body.sig : '';
       if (!checkSig(user, Sig.editPayload({ room: store.room.id, id: m[1], user: user.id, nonce, text }), sig)) throw httpError(400, 'assinatura inválida');
@@ -503,6 +505,30 @@ async function createConcordoServer(opts = {}) {
       const r = store.deleteMessage(m[1], user);
       if (!r) throw httpError(404, 'mensagem não encontrada');
       if (r === 'forbidden') throw httpError(403, 'só quem enviou, o dono ou um moderador pode apagar');
+      broadcastCh(r.channel, { t: 'msg_update', message: r });
+      return sendJson(res, 200, { message: r });
+    }
+
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)\/vote$/);
+    if (method === 'POST' && m) {
+      const body = await readJson(req);
+      const orig = store.getMessage(m[1]);
+      if (!orig || !store.canSee(user.id, orig.channel)) throw httpError(404, 'enquete não encontrada');
+      const r = store.votePoll(m[1], user.id, body.options);
+      if (!r) throw httpError(404, 'enquete não encontrada');
+      if (r === 'closed') throw httpError(409, 'esta enquete já foi encerrada');
+      if (r === 'invalid') throw httpError(400, 'voto inválido');
+      broadcastCh(r.channel, { t: 'msg_update', message: r });
+      return sendJson(res, 200, { message: r });
+    }
+
+    m = p.match(/^\/api\/messages\/([a-f0-9]+)\/close$/);
+    if (method === 'POST' && m) {
+      const orig = store.getMessage(m[1]);
+      if (!orig || !store.canSee(user.id, orig.channel)) throw httpError(404, 'enquete não encontrada');
+      const r = store.closePoll(m[1], user);
+      if (!r) throw httpError(404, 'enquete não encontrada');
+      if (r === 'forbidden') throw httpError(403, 'só quem criou a enquete, o dono ou um moderador pode encerrar');
       broadcastCh(r.channel, { t: 'msg_update', message: r });
       return sendJson(res, 200, { message: r });
     }
@@ -774,6 +800,17 @@ async function createConcordoServer(opts = {}) {
         return;
       }
 
+      if (data.t === 'soundboard') {
+        const me = voice.get(user.id);
+        if (!me || me.ws !== ws || !Soundboard.isValid(data.id)) return;
+        const now = Date.now();
+        if (now - (me.lastSound || 0) < 1500) return;
+        me.lastSound = now;
+        const out = JSON.stringify({ t: 'soundboard', from: user.id, id: data.id });
+        for (const v of voice.values()) if (v.channel === me.channel && v.ws.readyState === OPEN) v.ws.send(out);
+        return;
+      }
+
       if (data.t === 'msg') {
         const text = typeof data.text === 'string' ? data.text.trim() : '';
         const chan = store.getChannel(data.channel);
@@ -787,7 +824,12 @@ async function createConcordoServer(opts = {}) {
         if (!store.getUser(user.id)) return; // removido enquanto conectado
         const nonce = typeof data.nonce === 'string' ? data.nonce.slice(0, 64) : '';
         const replyId = typeof data.replyTo === 'string' && !isDm ? data.replyTo : '';
-        if (!checkSig(user, Sig.msgPayload({ room: store.room.id, channel: data.channel, user: user.id, nonce, text, replyTo: replyId }), data.sig)) {
+        const poll = data.poll === undefined ? null : cleanPoll(data.poll);
+        if (data.poll !== undefined && (!poll || isDm || text.length > 300)) return fail('enquete inválida: use de 2 a 6 opções diferentes');
+        const payload = poll
+          ? Sig.pollPayload({ room: store.room.id, channel: data.channel, user: user.id, nonce, text, options: poll.options, multi: poll.multi })
+          : Sig.msgPayload({ room: store.room.id, channel: data.channel, user: user.id, nonce, text, replyTo: replyId });
+        if (!checkSig(user, payload, data.sig)) {
           return ws.send(JSON.stringify({ t: 'error', message: 'assinatura inválida: atualize o app' }));
         }
         if (!allowMessage(user.id)) {
@@ -800,7 +842,7 @@ async function createConcordoServer(opts = {}) {
             replyTo = { id: orig.id, author: orig.author, text: (orig.text || (orig.attachments[0] ? orig.attachments[0].name : '')).slice(0, 120) };
           }
         }
-        const message = store.addMessage({ channel: data.channel, user, text, replyTo, mentions: isDm ? [] : findMentions(text), nonce: user.pub ? nonce : '', sig: user.pub ? data.sig : '' });
+        const message = store.addMessage({ channel: data.channel, user, text, replyTo, mentions: isDm ? [] : findMentions(text), poll: poll || undefined, nonce: user.pub ? nonce : '', sig: user.pub ? data.sig : '' });
         broadcastCh(data.channel, { t: 'msg', message });
       }
     });

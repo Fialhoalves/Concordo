@@ -8,6 +8,9 @@
   // texto novo: sala, canal, autor, número único, texto e (se for resposta) o id da mensagem respondida
   const msgPayload = ({ room, channel, user, nonce, text, replyTo }) =>
     JSON.stringify(['concordo-msg-v1', str(room), str(channel), str(user), str(nonce), str(text), str(replyTo)]);
+  // enquete: a pergunta, as opções e se aceita mais de uma resposta também ficam assinadas
+  const pollPayload = ({ room, channel, user, nonce, text, options, multi }) =>
+    JSON.stringify(['concordo-poll-v1', str(room), str(channel), str(user), str(nonce), str(text), (options || []).map(str), !!multi]);
   // edição de uma mensagem
   const editPayload = ({ room, id, user, nonce, text }) =>
     JSON.stringify(['concordo-edit-v1', str(room), str(id), str(user), str(nonce), str(text)]);
@@ -16,5 +19,5 @@
     JSON.stringify(['concordo-file-v1', str(room), str(id), str(channel), str(user), str(nonce),
       (attachments || []).map((a) => [str(a.id), str(a.name), Number(a.size) || 0])]);
   const b64 = { re: /^[A-Za-z0-9+/]+=*$/ };
-  return { msgPayload, editPayload, filePayload, isB64: (s) => typeof s === 'string' && s.length > 0 && s.length < 400 && b64.re.test(s) };
+  return { msgPayload, pollPayload, editPayload, filePayload, isB64: (s) => typeof s === 'string' && s.length > 0 && s.length < 400 && b64.re.test(s) };
 });

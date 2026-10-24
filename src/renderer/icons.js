@@ -31,6 +31,7 @@
   "pin": "<path d=\"M9 4h6l-1 6 3 3H7l3-3-1-6z\"/><path d=\"M12 13v7\"/>",
   "pip": "<path d=\"M21 9V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4\"/><rect x=\"12\" y=\"12\" width=\"9\" height=\"7\" rx=\"1.5\"/>",
   "plus": "<path d=\"M5 12h14M12 5v14\"/>",
+  "poll": "<path d=\"M5 20V10M12 20V4M19 20v-7\"/>",
   "reply": "<path d=\"M9 7 4 12l5 5\"/><path d=\"M4 12h10a6 6 0 0 1 6 6v1\"/>",
   "screen-share": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"14\" rx=\"2\"/><path d=\"M8 21h8M12 17v4M12 13V7m0 0-3 3m3-3 3 3\"/>",
   "search": "<circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/>",

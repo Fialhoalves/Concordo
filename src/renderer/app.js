@@ -869,6 +869,7 @@
         ui.replyBar,
         h('div', { class: 'composer' },
           h('button', { class: 'btn ghost', title: 'Enviar arquivo', onclick: () => fileInput.click(), 'aria-label': 'Enviar arquivo' }, ico('paperclip', 20)),
+          h('button', { class: 'btn ghost', 'data-act': 'poll', title: 'Criar enquete', 'aria-label': 'Criar enquete', onclick: openPollModal }, ico('poll', 20)),
           fileInput,
           ui.textarea,
           h('button', { class: 'btn primary with-icon', onclick: sendMessage }, ico('send', 16), 'Enviar')),
@@ -1287,6 +1288,9 @@
     if (m.editedAt) {
       payload = Sig.editPayload({ room, id: m.id, user: m.userId, nonce: m.editNonce, text: m.text });
       sig = m.editSig;
+    } else if (m.poll) {
+      payload = Sig.pollPayload({ room, channel: m.channel, user: m.userId, nonce: m.nonce, text: m.text, options: m.poll.options, multi: m.poll.multi });
+      sig = m.sig;
     } else if ((m.attachments || []).length && !m.text) {
       payload = Sig.filePayload({ room, id: m.id, channel: m.channel, user: m.userId, nonce: m.nonce, attachments: m.attachments });
       sig = m.sig;
@@ -1780,6 +1784,110 @@
     return out;
   }
 
+  // ---------- enquetes ----------
+  const canClosePoll = (m) => {
+    const me = S.session.user;
+    const author = S.users.get(m.userId);
+    return m.userId === me.id || me.role === 'owner' || (me.role === 'mod' && (!author || author.role === 'member'));
+  };
+
+  async function votePoll(m, index, mine) {
+    const next = new Set(mine);
+    if (m.poll.multi) {
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+    } else if (next.has(index)) next.clear();
+    else {
+      next.clear();
+      next.add(index);
+    }
+    try {
+      await api('POST', `/api/messages/${m.id}/vote`, { options: [...next] });
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  function pollEl(m) {
+    const me = S.session.user.id;
+    const votes = m.votes || {};
+    const people = new Set(Object.values(votes).flat());
+    const total = people.size;
+    const mine = new Set(Object.entries(votes).filter(([, ids]) => ids.includes(me)).map(([i]) => Number(i)));
+    const closed = !!m.pollClosed;
+    const opts = m.poll.options.map((label, i) => {
+      const ids = votes[i] || [];
+      const pct = total ? Math.round((ids.length / total) * 100) : 0;
+      return h('button', {
+        class: 'poll-opt' + (mine.has(i) ? ' mine' : ''), type: 'button', 'data-opt': String(i), disabled: closed,
+        title: ids.length ? ids.map(nameOf).join(', ') : 'Ninguém votou ainda',
+        onclick: () => votePoll(m, i, mine),
+      }, h('span', { class: 'poll-bar', style: { width: pct + '%' } }), h('span', { class: 'poll-label' }, label), h('span', { class: 'poll-count' }, `${ids.length} · ${pct}%`));
+    });
+    return h('div', { class: 'poll' + (closed ? ' closed' : ''), 'data-poll': m.id },
+      h('div', { class: 'poll-head' }, ico('poll', 14), h('span', null, closed ? 'Enquete encerrada' : m.poll.multi ? 'Enquete (marque quantas quiser)' : 'Enquete')),
+      ...opts,
+      h('div', { class: 'poll-foot' },
+        h('span', null, total === 1 ? '1 pessoa votou' : `${total} pessoas votaram`),
+        !closed && canClosePoll(m) ? h('button', { class: 'btn small ghost', 'data-act': 'close-poll', onclick: () => msgCall('POST', m.id, '/close') }, 'Encerrar') : null));
+  }
+
+  async function sendPoll({ text, options, multi }) {
+    const channel = S.current;
+    if (isDmId(channel)) throw new Error('Enquetes não funcionam em conversa direta.');
+    if (!S.ws || S.ws.readyState !== 1) throw new Error('Sem conexão com a sala. Aguarde a reconexão.');
+    const msg = { t: 'msg', channel, text, poll: { options, multi } };
+    if (S.keys && S.keyOk) {
+      msg.nonce = Keys.nonce();
+      msg.sig = await S.keys.sign(Sig.pollPayload({ room: roomId(), channel, user: S.session.user.id, nonce: msg.nonce, text, options, multi }));
+    }
+    S.ws.send(JSON.stringify(msg));
+  }
+
+  function openPollModal() {
+    if (isDmId(S.current) || (S.channels.find((c) => c.id === S.current) || {}).type === 'voice') return toast('Abra um canal de texto para criar a enquete.', 'error');
+    const question = h('input', { class: 'input', maxlength: '200', placeholder: 'Qual é a pergunta?', 'data-role': 'poll-question' });
+    const list = h('div', { class: 'col', style: { gap: '6px' } });
+    const multi = h('input', { type: 'checkbox', 'data-role': 'poll-multi' });
+    const add = h('button', { class: 'btn small', type: 'button', 'data-act': 'poll-add' }, 'Adicionar opção');
+    const send = h('button', { class: 'btn primary', 'data-act': 'poll-send' }, 'Enviar enquete');
+    const inputs = [];
+    const addOption = () => {
+      const inp = h('input', { class: 'input', maxlength: '80', placeholder: `Opção ${inputs.length + 1}`, 'data-role': 'poll-option' });
+      inputs.push(inp);
+      list.append(inp);
+      add.disabled = inputs.length >= 6;
+    };
+    addOption();
+    addOption();
+    add.addEventListener('click', () => {
+      if (inputs.length < 6) addOption();
+      inputs[inputs.length - 1].focus();
+    });
+    const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    send.addEventListener('click', async () => {
+      const text = question.value.trim();
+      const options = inputs.map((i) => clean(i.value)).filter(Boolean);
+      if (!text) return toast('Escreva a pergunta.', 'error');
+      if (options.length < 2) return toast('Coloque pelo menos duas opções.', 'error');
+      if (new Set(options.map((o) => o.toLowerCase())).size !== options.length) return toast('As opções precisam ser diferentes.', 'error');
+      try {
+        await sendPoll({ text, options, multi: multi.checked });
+        close();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    });
+    const close = modal([
+      h('h3', null, 'Nova enquete'),
+      h('div', { class: 'field' }, h('label', null, 'Pergunta'), question),
+      h('div', { class: 'field' }, h('label', null, 'Opções (de 2 a 6)'), list, h('div', { class: 'row', style: { marginTop: '6px' } }, add)),
+      h('label', { class: 'check' }, multi, h('span', null, 'Permitir mais de uma resposta')),
+      h('div', { class: 'row end', style: { marginTop: '14px' } }, h('button', { class: 'btn', onclick: () => close() }, 'Cancelar'), send),
+    ]);
+    question.focus();
+  }
+
   function msgElement(m, grouped) {
     const me = S.session.user;
     const user = S.users.get(m.userId);
@@ -1798,6 +1906,7 @@
         ? h('div', { class: 'text deleted' }, 'Mensagem apagada')
         : (textOf(m) ? h('div', { class: 'text' }, formatText(textOf(m)),
           m.editedAt ? h('span', { class: 'edited', title: 'Editada às ' + hhmm(m.editedAt) }, ' (editada)') : null) : null),
+      m.poll && !m.deleted ? pollEl(m) : null,
       ...(m.deleted ? [] : (m.attachments || []).map(attachmentEl)),
       m.deleted ? null : reactionsEl(m));
     const el = h('div', {
@@ -1819,7 +1928,7 @@
     return h('div', { class: 'msg-tools' },
       tool('react-msg', 'Reagir', 'smile', (e) => openReactionPicker(e.currentTarget, (key) => toggleReaction(m.id, key)), ' msg-react'),
       dm ? null : tool('reply-msg', 'Responder', 'reply', () => startReply(m)),
-      mine && m.text && !dm && !(m.attachments || []).length ? tool('edit-msg', 'Editar', 'edit', () => startEdit(m)) : null,
+      mine && m.text && !dm && !m.poll && !(m.attachments || []).length ? tool('edit-msg', 'Editar', 'edit', () => startEdit(m)) : null,
       dm ? null : tool('pin-msg', m.pinned ? 'Desafixar' : 'Fixar', 'pin', () => msgCall('POST', m.id, '/pin')),
       mine || mayModerate
         ? tool('delete-msg', 'Apagar', 'trash', () => {
@@ -2132,6 +2241,37 @@
     const top = up || r.bottom + hgt + 8 > window.innerHeight ? Math.max(8, r.top - hgt - 8) : r.bottom + 6;
     pop.style.left = left + 'px';
     pop.style.top = top + 'px';
+    setTimeout(() => {
+      document.addEventListener('mousedown', outside, true);
+      document.addEventListener('keydown', esc, true);
+    });
+  }
+
+  function openSoundboard(anchor) {
+    document.querySelectorAll('.sb-picker').forEach((n) => n.remove());
+    const close = () => {
+      pop.remove();
+      document.removeEventListener('mousedown', outside, true);
+      document.removeEventListener('keydown', esc, true);
+    };
+    const pop = h('div', { class: 'sb-picker', role: 'dialog', 'aria-label': 'Soundboard' },
+      ...window.ConcordoSoundboardList.CLIPS.map((c) => h('button', {
+        class: 'sb-opt', type: 'button', 'data-sound': c.id, title: c.label,
+        onclick: () => {
+          wsSend({ t: 'soundboard', id: c.id });
+          close();
+        },
+      }, h('span', { class: 'sb-emoji' }, c.emoji), h('span', null, c.label))));
+    const outside = (ev) => {
+      if (!pop.contains(ev.target) && !anchor.contains(ev.target)) close();
+    };
+    const esc = (ev) => {
+      if (ev.key === 'Escape') close();
+    };
+    document.body.append(pop);
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = Math.min(Math.max(8, r.right - pop.offsetWidth), window.innerWidth - pop.offsetWidth - 8) + 'px';
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8) + 'px';
     setTimeout(() => {
       document.addEventListener('mousedown', outside, true);
       document.addEventListener('keydown', esc, true);
@@ -2570,6 +2710,11 @@
         return applyMessageUpdate(d.message);
       case 'typing':
         return onTyping(d);
+      case 'soundboard': {
+        const mutedUser = ((vprefs().users || {})[d.from] || {}).muted;
+        if (S.voice.client && !mutedUser && window.ConcordoSoundboard) window.ConcordoSoundboard.play(d.id);
+        return;
+      }
       case 'live_react':
         return R.isValid(d.key) ? floatReaction(d.from, d.key) : undefined;
       case 'presence':
@@ -3032,6 +3177,8 @@
           }),
         btn('react', ico('smile', 20), 'Reagir na chamada', false,
           (e) => openReactionPicker(e.currentTarget, (key) => wsSend({ t: 'live_react', key }), { up: true })),
+        btn('sounds', ico('volume', 20), 'Soundboard: tocar um som para a chamada', false,
+          (e) => openSoundboard(e.currentTarget)),
         btn('leave', ico('call-end', 20), 'Sair da chamada', false, () => leaveVoice(), ' leave')),
     ].filter(Boolean));
   }
@@ -3491,6 +3638,13 @@
     soundVol.value = String(LS.get('concordo.soundVolume', 0.6));
     soundVol.addEventListener('input', () => LS.set('concordo.soundVolume', Number(soundVol.value)));
     soundVol.addEventListener('change', () => sfx('unmute'));
+    const sbBox = h('input', { type: 'checkbox', 'data-role': 'soundboard-on' });
+    sbBox.checked = LS.get('concordo.soundboardOn', true) !== false;
+    sbBox.addEventListener('change', () => LS.set('concordo.soundboardOn', sbBox.checked));
+    const sbVol = h('input', { type: 'range', min: '0', max: '1', step: '0.05', 'data-role': 'soundboard-vol' });
+    sbVol.value = String(LS.get('concordo.soundboardVolume', 0.6));
+    sbVol.addEventListener('input', () => LS.set('concordo.soundboardVolume', Number(sbVol.value)));
+    sbVol.addEventListener('change', () => window.ConcordoSoundboard && window.ConcordoSoundboard.play('sino'));
     const copyBox = h('input', { type: 'checkbox', 'data-role': 'keep-copy' });
     copyBox.checked = keepCopy();
     copyBox.addEventListener('change', () => {
@@ -3586,6 +3740,8 @@
       h('div', { class: 'field' }, h('label', null, 'Avisar de mensagens novas'), notifySel),
       h('label', { class: 'check' }, soundsBox, h('span', null, 'Sons de chamada (entrar, sair, mutar, câmera, tela)')),
       h('div', { class: 'field' }, h('label', null, 'Volume dos sons'), soundVol),
+      h('label', { class: 'check' }, sbBox, h('span', null, 'Ouvir o soundboard dos outros na chamada')),
+      h('div', { class: 'field' }, h('label', null, 'Volume do soundboard'), sbVol),
       h('h4', { class: 'sub' }, 'Áudio'),
       h('div', { class: 'field' }, h('label', null, 'Microfone'), mic),
       canOut ? h('div', { class: 'field' }, h('label', null, 'Saída de som'), out) : null,

@@ -41,6 +41,13 @@ function verifySig(pubB64, payload, sigB64) {
     return false;
   }
 }
+// enquete: 2 a 6 opções (até 80 caracteres cada), resposta única ou múltipla
+function cleanPoll(p) {
+  if (!p || typeof p !== 'object' || !Array.isArray(p.options)) return null;
+  const options = p.options.map((o) => String(o ?? '').replace(/\s+/g, ' ').trim().slice(0, 80));
+  if (options.length < 2 || options.length > 6 || options.some((o) => !o) || new Set(options.map((o) => o.toLowerCase())).size !== options.length) return null;
+  return { options, multi: p.multi === true };
+}
 const isKey32 = (s) => typeof s === 'string' && /^[A-Za-z0-9+/]{43}=$/.test(s); // 32 bytes em base64
 const keyHash = (pub) => crypto.createHash('sha256').update(String(pub)).digest('hex').slice(0, 32);
 
@@ -93,6 +100,8 @@ class Store {
       edits: {},
       deleted: {},
       pins: {},
+      votes: {}, // id da enquete -> { userId: { o: [índices], at } }
+      pollClosed: {},
       sigs: {}, // assinaturas de mensagens com arquivo (assinadas depois do envio)
       banned: {}, // hash da chave pública -> { name, at }
       rendezvous: null,
@@ -418,6 +427,8 @@ class Store {
         msg.replyTo = { id: String(raw.replyTo.id || '').slice(0, 24), author: String(raw.replyTo.author || '').slice(0, 40), text: String(raw.replyTo.text || '').slice(0, 200) };
       }
       if (Array.isArray(raw.mentions)) msg.mentions = raw.mentions.map(String).slice(0, 20);
+      const poll = cleanPoll(raw.poll);
+      if (poll) msg.poll = poll;
       if (typeof raw.sig === 'string' && typeof raw.nonce === 'string') {
         msg.nonce = raw.nonce.slice(0, 64);
         msg.sig = raw.sig.slice(0, 100);
@@ -495,6 +506,16 @@ class Store {
     for (const [id, g] of Object.entries(own(other.sigs))) {
       if (/^[a-f0-9]{16}$/.test(id) && !st.sigs[id] && g && typeof g.sig === 'string' && typeof g.nonce === 'string') st.sigs[id] = { nonce: g.nonce.slice(0, 64), sig: g.sig.slice(0, 100) };
     }
+    for (const [id, byUser] of Object.entries(own(other.votes))) {
+      if (!/^[a-f0-9]{16}$/.test(id) || st.deleted[id]) continue;
+      const mine = (st.votes[id] = st.votes[id] || {});
+      for (const [uid, v] of Object.entries(own(byUser))) {
+        if (!ID12.test(uid) || !v || !Array.isArray(v.o) || v.o.length > 6) continue;
+        if (!mine[uid] || (Number(v.at) || 0) > mine[uid].at) mine[uid] = { o: v.o.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n < 6), at: Number(v.at) || Date.now() };
+      }
+      if (!Object.keys(mine).length) delete st.votes[id];
+    }
+    for (const id of Object.keys(own(other.pollClosed))) if (/^[a-f0-9]{16}$/.test(id)) st.pollClosed[id] = true;
     for (const [h, b] of Object.entries(own(other.banned))) {
       if (/^[a-f0-9]{32}$/.test(h) && !st.banned[h]) st.banned[h] = { name: String((b || {}).name || '').slice(0, 24), at: Number((b || {}).at) || Date.now() };
     }
@@ -677,7 +698,7 @@ class Store {
   }
 
   // ---- mensagens ----
-  addMessage({ channel, user, text, attachments, replyTo, mentions, nonce, sig }) {
+  addMessage({ channel, user, text, attachments, replyTo, mentions, nonce, sig, poll }) {
     const msg = {
       id: rid(8),
       channel,
@@ -689,6 +710,7 @@ class Store {
     };
     if (replyTo) msg.replyTo = replyTo; // { id, author, text }: resumo da mensagem respondida
     if (mentions && mentions.length) msg.mentions = mentions;
+    if (poll) msg.poll = poll;
     if (sig && nonce) {
       msg.nonce = String(nonce).slice(0, 64);
       msg.sig = String(sig).slice(0, 100);
@@ -727,6 +749,13 @@ class Store {
       delete out.nonce;
       delete out.editSig;
       delete out.editNonce;
+      delete out.poll;
+    }
+    if (m.poll && !st.deleted[m.id]) {
+      const votes = {};
+      for (const [uid, v] of Object.entries(st.votes[m.id] || {})) for (const o of v.o) (votes[o] = votes[o] || []).push(uid);
+      out.votes = votes;
+      if (st.pollClosed[m.id]) out.pollClosed = true;
     }
     if (st.pins[m.id]) out.pinned = true;
     return out;
@@ -758,6 +787,31 @@ class Store {
     if (m.userId !== user.id && !mayModerate) return 'forbidden';
     this.state.deleted[id] = true;
     delete this.state.pins[id];
+    this.save();
+    return this.decorate(m);
+  }
+
+  votePoll(id, userId, options) {
+    const m = this._findMessage(id);
+    if (!m || !m.poll || this.state.deleted[id]) return null;
+    if (this.state.pollClosed[id]) return 'closed';
+    const picks = [...new Set((Array.isArray(options) ? options : []).map(Number))];
+    if (picks.some((n) => !Number.isInteger(n) || n < 0 || n >= m.poll.options.length) || (!m.poll.multi && picks.length > 1)) return 'invalid';
+    const mine = (this.state.votes[id] = this.state.votes[id] || {});
+    if (picks.length) mine[userId] = { o: picks.sort((a, b) => a - b), at: Date.now() };
+    else delete mine[userId];
+    if (!Object.keys(mine).length) delete this.state.votes[id];
+    this.save();
+    return this.decorate(m);
+  }
+
+  closePoll(id, user) {
+    const m = this._findMessage(id);
+    if (!m || !m.poll || this.state.deleted[id]) return null;
+    const author = this.state.users[m.userId];
+    const may = m.userId === user.id || user.role === 'owner' || (user.role === 'mod' && (!author || author.role === 'member'));
+    if (!may) return 'forbidden';
+    this.state.pollClosed[id] = true;
     this.save();
     return this.decorate(m);
   }
@@ -868,4 +922,4 @@ class Store {
   }
 }
 
-module.exports = { Store, slugChannel, rid, verifySig, isKey32, MAX_DM_CIPHER };
+module.exports = { Store, slugChannel, rid, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER };
