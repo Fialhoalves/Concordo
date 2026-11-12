@@ -259,14 +259,37 @@ textarea.input { resize: vertical; min-height: 84px; }
 .lobby-icon { font-size: 40px; }
 .lobby-card h2 { margin: 0; }
 .hint.small { font-size: 12px; }
-.stage.live { padding: 12px; gap: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); grid-auto-rows: 1fr; align-content: stretch; }
-.main.is-voice .stage.live { display: grid; }
-.stage.live.n1 { grid-template-columns: 1fr; }
-.stage.live.n2, .stage.live.n4 { grid-template-columns: repeat(2, 1fr); }
+/* Palco da chamada: os quadros com vídeo ficam na grade (tamanho calculado em layoutStage, app.js);
+   quem está só em áudio e os vídeos não fixados ficam na faixa de baixo. */
+.stage.live { padding: 12px; gap: 10px; flex-direction: column; }
+.stage-grid { flex: 1; min-height: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-content: center; overflow: hidden; }
+.stage-grid .tile { width: var(--tile-w, 100%); height: var(--tile-h, 100%); flex: none; min-height: 0; }
+.stage-strip { flex: none; display: flex; align-items: center; gap: 10px; overflow-x: auto; padding-bottom: 2px; }
+.stage-strip[hidden] { display: none; }
+.strip-thumbs, .strip-people { display: flex; align-items: center; gap: 8px; flex: none; }
+.strip-thumbs:empty, .strip-people:empty { display: none; }
+.strip-people { margin: 0 auto; }
+.strip-thumbs .tile { width: 176px; height: 99px; flex: none; min-height: 0; }
+.tile.thumb .tile-tools, .tile.thumb .tile-zoom { display: none !important; }
+.tile.thumb .tile-label { font-size: 11px; left: 4px; bottom: 4px; }
+.pchip { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border-radius: 999px; background: var(--color-panel-elevated); border: 2px solid transparent; font-size: 12px; color: var(--color-text-secondary); white-space: nowrap; }
+.pchip .avatar { width: 28px; height: 28px; font-size: 13px; }
+.pchip .name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.pchip .icon { color: var(--color-text-muted); }
+.pchip.speaking { border-color: var(--color-online); color: var(--color-text); }
+.pchip.failed { border-color: var(--color-danger); }
+.pchip-state { color: var(--color-text-muted); }
+.pchip-state.bad { color: var(--color-danger); }
+.tile:fullscreen { width: 100vw !important; height: 100vh !important; border-radius: 0; border: 0; cursor: default; }
+.tile:fullscreen video { object-fit: contain; }
+.tile.pinned { border-color: var(--concordo-violet); }
+.tile-pin, .tile-vol { display: none !important; }
+.tile.pinnable .tile-pin { display: grid !important; }
+.tile.pinned .tile-pin { background: var(--concordo-violet); }
+.tile.screen:not(.mine) .tile-vol { display: flex !important; align-items: center; gap: 4px; background: rgba(0,0,0,.6); color: #fff; border-radius: 6px; padding: 0 6px; cursor: default; }
+.tile-vol input { width: 84px; accent-color: var(--concordo-violet); }
+.tile:not(.pinnable) { cursor: default; }
 /* um destaque grande + miniaturas empilhadas ao lado; o destaque ocupa a altura da área e nunca passa dela */
-.stage.live.has-focus { display: flex; flex-flow: column wrap; align-content: flex-start; overflow: auto; }
-.stage.live.has-focus .tile { width: 200px; height: 120px; flex: none; min-height: 0; }
-.stage.live.has-focus .tile.focused { width: calc(100% - 210px); height: 100%; }
 .tile { position: relative; background: var(--panel); border-radius: var(--radius); overflow: hidden; display: grid; place-items: center; min-height: 120px; cursor: pointer; border: 2px solid transparent; }
 .tile.speaking { border-color: var(--ok); }
 .tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
@@ -388,7 +411,6 @@ a { color: var(--concordo-violet-light); }
 }
 @media (max-width: 900px) {
   .sidebar { width: 220px; }
-  .stage.live { grid-template-columns: 1fr; }
 }
 
 /* o palco de vídeo só aparece no canal de voz (a regra .stage.live acima tem mais força que .stage) */

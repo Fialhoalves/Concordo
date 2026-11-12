@@ -7,7 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { WebSocketServer } = require('ws');
-const { Store, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER } = require('./store');
+const { pipeline } = require('node:stream');
+const { Store, verifySig, isKey32, cleanPoll, MAX_DM_CIPHER, MAX_SOUNDS, MAX_SOUNDS_PER_USER } = require('./store');
 const Soundboard = require('../shared/soundboard');
 const Sig = require('../shared/sig');
 const Invite = require('../shared/invite');
@@ -79,7 +80,26 @@ function audioType(b) {
   if (b.toString('latin1', 0, 3) === 'ID3' || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
   return null;
 }
-const MAX_SOUND_BYTES = 200 * 1024;
+// "bytes=a-b", "bytes=a-" ou "bytes=-n" → { start, end }; null sem cabeçalho (ou formato que não atendemos); false se fora do arquivo
+function parseRange(header, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim());
+  if (!m || (!m[1] && !m[2])) return null;
+  let start, end;
+  if (!m[1]) {
+    const n = Number(m[2]);
+    if (!n) return false;
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  }
+  if (start >= size || start > end) return false;
+  return { start, end };
+}
+
+const MAX_SOUND_BYTES = 1024 * 1024;
+const MAX_SOUND_SECONDS = 20; // conferido por quem envia; quem toca corta nesse tempo
 
 function readJson(req, limit = 64 * 1024) {
   return new Promise((resolve, reject) => {
@@ -115,7 +135,7 @@ async function createConcordoServer(opts = {}) {
     ownerName,
     getPublicUrl = () => null,
     maxUploadBytes = 90 * 1024 * 1024, // o plano grátis do Cloudflare corta em ~100 MB
-    iceServers = DEFAULT_ICE, // STUN/TURN que os clientes usam nas chamadas
+    iceServers = DEFAULT_ICE, // STUN/TURN que os clientes usam nas chamadas: uma lista ou uma função que a devolve
     version = '0.0.0',
     takeoverUserId, // sucessor assumindo uma sala copiada: vira o dono
     takeoverToken, // token do próprio sucessor (as cópias não trazem tokens)
@@ -134,6 +154,12 @@ async function createConcordoServer(opts = {}) {
   const clients = new Map(); // userId -> Set<WebSocket>
   // quem está invisível não aparece como online para os outros
   const online = () => [...clients.keys()].filter((id) => !(store.getUser(id) && store.getUser(id).status === 'invisible'));
+
+  // a lista pode mudar com a sala aberta (o host configurou um TURN): por isso é lida a cada uso
+  const currentIce = () => {
+    const list = typeof iceServers === 'function' ? iceServers() : iceServers;
+    return Array.isArray(list) && list.length ? list : DEFAULT_ICE;
+  };
 
   function broadcast(payload) {
     const data = JSON.stringify(payload);
@@ -296,19 +322,29 @@ async function createConcordoServer(opts = {}) {
     sendJson(res, 201, { message });
   }
 
-  function handleDownload(res, fileId) {
+  function handleDownload(res, fileId, req) {
     const meta = /^[a-f0-9]{24}$/.test(fileId) ? store.getFile(fileId) : null;
     const file = meta && path.join(store.uploadsDir, meta.id);
     if (!meta || !fs.existsSync(file)) throw httpError(404, 'arquivo não encontrado');
     const isImage = meta.type !== 'application/octet-stream';
-    res.writeHead(200, {
+    // Range: deixa o player de vídeo/áudio avançar sem baixar o arquivo inteiro
+    const size = fs.statSync(file).size;
+    const range = parseRange(req && req.headers.range, size);
+    if (range === false) {
+      res.writeHead(416, { 'Content-Range': `bytes */${size}` });
+      return res.end();
+    }
+    res.writeHead(range ? 206 : 200, {
       'Content-Type': meta.type,
-      'Content-Length': meta.size,
+      'Content-Length': range ? range.end - range.start + 1 : size,
+      'Accept-Ranges': 'bytes',
+      ...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${size}` } : {}),
       'Content-Disposition': `${isImage ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(meta.name)}`,
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'private, max-age=3600',
     });
-    fs.createReadStream(file).pipe(res);
+    // se a leitura falhar no meio (arquivo apagado, disco), encerra a resposta em vez de derrubar o processo
+    pipeline(fs.createReadStream(file, range ? { start: range.start, end: range.end } : undefined), res, () => {});
   }
 
   async function handle(req, res) {
@@ -373,9 +409,12 @@ async function createConcordoServer(opts = {}) {
         channels: store.channelsFor(user.id),
         users: store.users().map(pub),
         online: online(),
-        limits: { maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH, maxVoice: MAX_VOICE },
+        limits: {
+          maxUploadBytes, maxMessageLength: MAX_MESSAGE_LENGTH, maxVoice: MAX_VOICE,
+          maxSounds: MAX_SOUNDS, maxSoundsPerUser: MAX_SOUNDS_PER_USER, maxSoundBytes: MAX_SOUND_BYTES, maxSoundSeconds: MAX_SOUND_SECONDS,
+        },
         voice: voiceSnapshot(),
-        ice: iceServers,
+        ice: currentIce(),
         heir: (store.getHeir() || {}).id || null,
         succession: store.succession(),
         sounds: store.listSounds(),
@@ -421,7 +460,7 @@ async function createConcordoServer(opts = {}) {
     }
 
     m = p.match(/^\/api\/files\/([a-f0-9]+)$/);
-    if (method === 'GET' && m) return handleDownload(res, m[1]);
+    if (method === 'GET' && m) return handleDownload(res, m[1], req);
 
     if (method === 'POST' && p === '/api/invites') {
       requireOwner(user);
@@ -667,7 +706,7 @@ async function createConcordoServer(opts = {}) {
     if (m && method === 'GET' && m[2]) {
       const s = (store.state.sounds || {})[m[1]];
       if (!s) throw httpError(404, 'som não encontrado');
-      return handleDownload(res, s.file);
+      return handleDownload(res, s.file, req);
     }
     if (m && method === 'DELETE' && !m[2]) {
       const r = store.removeSound(m[1], user);
@@ -969,9 +1008,10 @@ async function createConcordoServer(opts = {}) {
     owner,
     makeCode,
     announceLeaving,
+    announceIce: () => broadcast({ t: 'ice', ice: currentIce() }),
     traffic,
     close,
   };
 }
 
-module.exports = { createConcordoServer };
+module.exports = { createConcordoServer, DEFAULT_ICE };

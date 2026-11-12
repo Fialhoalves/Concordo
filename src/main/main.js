@@ -3,7 +3,7 @@ const { app, BrowserWindow, ipcMain, shell, Menu, Tray, nativeImage, dialog, ses
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
-const { createConcordoServer } = require('../server');
+const { createConcordoServer, DEFAULT_ICE } = require('../server');
 const tunnel = require('./tunnel');
 const backup = require('./backup');
 const usage = require('./usage');
@@ -107,6 +107,72 @@ function iceFromEnv() {
   console.warn('CONCORDO_ICE_SERVERS inválido; usando os servidores padrão.');
   return undefined;
 }
+
+// Servidor TURN configurado pelo host na interface. Fica em arquivo no userData, com a senha cifrada
+// (como o token do endereço fixo). Vale para as salas hospedadas neste computador.
+const turnConfigPath = () => path.join(app.getPath('userData'), 'turn-config.json');
+
+function readTurnConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(turnConfigPath(), 'utf8'));
+    const urls = cleanTurnUrls(raw.urls);
+    if (!urls.length || !raw.username || !raw.credential) return null; // o navegador recusa TURN sem usuário e senha
+    const credential = raw.credential ? (raw.enc ? safeStorage.decryptString(Buffer.from(raw.credential, 'base64')) : raw.credential) : '';
+    return { urls, username: String(raw.username || ''), credential };
+  } catch {
+    return null;
+  }
+}
+
+function cleanTurnUrls(value) {
+  const list = Array.isArray(value) ? value : String(value || '').split(/[\s,;]+/);
+  return list.map((u) => String(u).trim()).filter((u) => /^turns?:[^\s]{3,200}$/i.test(u)).slice(0, 4);
+}
+
+// O que as salas entregam aos membros: a variável de ambiente manda; senão, STUN padrão + o TURN salvo.
+function currentIceServers() {
+  const env = iceFromEnv();
+  if (env) return env;
+  const turn = readTurnConfig();
+  return turn ? [...DEFAULT_ICE, turn] : DEFAULT_ICE;
+}
+
+const turnPublic = () => {
+  const c = readTurnConfig();
+  return { urls: c ? c.urls.join(' ') : '', username: c ? c.username : '', hasCredential: !!(c && c.credential), env: !!iceFromEnv() };
+};
+
+function announceIce() {
+  for (const h of hosts.values()) {
+    try {
+      h.server.announceIce();
+    } catch {
+      /* sala fechando */
+    }
+  }
+}
+
+ipcMain.handle('turn:get', () => turnPublic());
+
+ipcMain.handle('turn:set', (_event, cfg = {}) => {
+  const urls = cleanTurnUrls(cfg.urls);
+  if (!urls.length) throw new Error('Endereço inválido. Use algo como turn:servidor.exemplo.com:3478');
+  const username = String(cfg.username || '').trim().slice(0, 200);
+  const old = readTurnConfig();
+  const credential = String(cfg.credential || '').slice(0, 500) || (old ? old.credential : '');
+  if (!username || !credential) throw new Error('Informe o usuário e a senha do servidor TURN.');
+  const enc = safeStorage.isEncryptionAvailable();
+  const stored = credential && enc ? safeStorage.encryptString(credential).toString('base64') : credential;
+  fs.writeFileSync(turnConfigPath(), JSON.stringify({ urls, username, credential: stored, enc: !!(credential && enc) }), { mode: 0o600 });
+  announceIce();
+  return turnPublic();
+});
+
+ipcMain.handle('turn:clear', () => {
+  fs.rmSync(turnConfigPath(), { force: true });
+  announceIce();
+  return turnPublic();
+});
 
 const isAppPage = (url) => typeof url === 'string' && url.startsWith('file://');
 const ALLOWED_PERMISSIONS = new Set(['media', 'display-capture', 'notifications', 'clipboard-sanitized-write', 'fullscreen']);
@@ -507,7 +573,7 @@ async function startHost({ dataDir, roomId, roomName, ownerName, takeoverUserId,
       minEpoch,
       getPublicUrl: () => (current ? current.publicUrl : null),
       version: app.getVersion(),
-      iceServers: iceFromEnv(),
+      iceServers: currentIceServers,
     });
   } catch (e) {
     if (e && e.code === 'EADDRINUSE') {

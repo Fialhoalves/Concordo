@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const WebSocket = require('ws');
 const { createConcordoServer } = require('../src/server');
+const { MAX_SOUNDS_PER_USER } = require('../src/server/store');
 const { Store } = require('../src/server/store');
 const Invite = require('../src/shared/invite');
 const Sig = require('../src/shared/sig');
@@ -210,7 +211,7 @@ test('sons personalizados: valida o áudio, limita por pessoa, toca na chamada e
   const up = (token, body, q = 'name=Aplauso&emoji=%F0%9F%91%8F') =>
     fetch(`${srv.localUrl}/api/sounds?${q}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' }, body });
   assert.equal((await up(a.token, Buffer.from('isto não é áudio de jeito nenhum'))).status, 400);
-  assert.equal((await up(a.token, Buffer.concat([wav, Buffer.alloc(210 * 1024)]))).status, 413);
+  assert.equal((await up(a.token, Buffer.concat([wav, Buffer.alloc(1024 * 1024 + 10)]))).status, 413);
   const ok = await up(a.token, wav);
   assert.equal(ok.status, 201);
   const { id } = await ok.json();
@@ -220,9 +221,8 @@ test('sons personalizados: valida o áudio, limita por pessoa, toca na chamada e
   const audio = await fetch(`${srv.localUrl}/api/sounds/${id}/audio`, { headers: { Authorization: `Bearer ${b.token}` } });
   assert.equal(audio.status, 200);
   assert.equal(Buffer.from(await audio.arrayBuffer()).length, wav.length);
-  assert.equal((await up(a.token, wav)).status, 201);
-  assert.equal((await up(a.token, wav)).status, 201);
-  assert.equal((await up(a.token, wav)).status, 409, 'membro tem no máximo 3');
+  for (let i = 1; i < MAX_SOUNDS_PER_USER; i++) assert.equal((await up(a.token, wav)).status, 201);
+  assert.equal((await up(a.token, wav)).status, 409, 'membro tem um máximo de sons');
   // toca na chamada: o relay aceita o id personalizado e rejeita um inexistente
   const wa = await connect(a.token);
   const wb = await connect(b.token);

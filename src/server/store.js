@@ -12,8 +12,8 @@ const rid = (bytes = 8) => crypto.randomBytes(bytes).toString('hex');
 
 const MAX_CHANNELS = 30;
 const CHANNEL_TYPES = ['text', 'voice', 'dm'];
-const MAX_SOUNDS = 12;
-const MAX_SOUNDS_PER_USER = 3;
+const MAX_SOUNDS = 40;
+const MAX_SOUNDS_PER_USER = 8;
 const ID12 = /^[a-f0-9]{12}$/;
 const MAX_DM_CIPHER = 20000; // texto cifrado (base64) é maior que o original
 
