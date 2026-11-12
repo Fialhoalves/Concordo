@@ -2301,11 +2301,25 @@
     return bytes;
   }
 
+  // limites dos sons da sala: vêm do host; salas em versão antiga usam os valores de antes
+  const soundLimits = () => {
+    const l = S.limits || {};
+    return { room: l.maxSounds || 12, perUser: l.maxSoundsPerUser || 3, bytes: l.maxSoundBytes || 200 * 1024, seconds: l.maxSoundSeconds || 6 };
+  };
+  const kb = (n) => (n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(n % (1024 * 1024) ? 1 : 0) + ' MB' : Math.round(n / 1024) + ' KB');
+
+  function preloadSounds() {
+    const sb = window.ConcordoSoundboard;
+    if (!sb || !sb.preload || !S.voice.client) return;
+    for (const snd of S.sounds) sb.preload('c-' + snd.id, () => loadSound(snd.id));
+  }
+
   function openSoundUpload() {
+    const lim = soundLimits();
     const file = h('input', { type: 'file', accept: 'audio/wav,audio/mpeg,audio/ogg,.wav,.mp3,.ogg', 'data-role': 'sound-file', hidden: true });
     const name = h('input', { class: 'input', maxlength: '20', placeholder: 'Nome do som (ex.: Aplauso)', 'data-role': 'sound-name' });
     const emoji = h('input', { class: 'input', maxlength: '4', placeholder: '🔊', style: { width: '70px' }, 'data-role': 'sound-emoji' });
-    const info = h('p', { class: 'hint' }, 'Escolha um arquivo WAV, MP3 ou OGG de até 6 segundos e 200 KB. Todo mundo na sala poderá tocá-lo na chamada.');
+    const info = h('p', { class: 'hint' }, `Escolha um arquivo WAV, MP3 ou OGG de até ${lim.seconds} segundos e ${kb(lim.bytes)}. Todo mundo na sala poderá tocá-lo na chamada.`);
     const send = h('button', { class: 'btn primary', 'data-act': 'sound-send', disabled: true }, 'Enviar som');
     let bytes = null;
     file.addEventListener('change', async () => {
@@ -2313,11 +2327,11 @@
       send.disabled = true;
       const f = file.files[0];
       if (!f) return;
-      if (f.size > 200 * 1024) return void (info.textContent = 'Esse arquivo passa de 200 KB. Escolha um mais curto.');
+      if (f.size > lim.bytes) return void (info.textContent = `Esse arquivo passa de ${kb(lim.bytes)}. Escolha um mais curto.`);
       try {
         const buf = await f.arrayBuffer();
         const secs = await window.ConcordoSoundboard.inspect(buf);
-        if (secs > window.ConcordoSoundboard.MAX_SECONDS) return void (info.textContent = `Esse som tem ${secs.toFixed(1)} s; o máximo é ${window.ConcordoSoundboard.MAX_SECONDS} s.`);
+        if (secs > lim.seconds) return void (info.textContent = `Esse som tem ${secs.toFixed(1)} s; o máximo é ${lim.seconds} s.`);
         bytes = buf;
         if (!name.value) name.value = f.name.replace(/\.[^.]+$/, '').slice(0, 20);
         info.textContent = `Pronto: ${secs.toFixed(1)} s, ${Math.ceil(f.size / 1024)} KB.`;
@@ -2367,7 +2381,8 @@
     const me = S.session.user;
     const canDelete = (snd) => snd.userId === me.id || me.role === 'owner' || (me.role === 'mod' && ((S.users.get(snd.userId) || {}).role || 'member') === 'member');
     const mine = S.sounds.filter((x) => x.userId === me.id).length;
-    const full = S.sounds.length >= 12 || (me.role === 'member' && mine >= 3);
+    const lim = soundLimits();
+    const full = S.sounds.length >= lim.room || (me.role === 'member' && mine >= lim.perUser);
     const pop = h('div', { class: 'sb-picker', role: 'dialog', 'aria-label': 'Soundboard' },
       ...window.ConcordoSoundboardList.CLIPS.map((c) => h('button', {
         class: 'sb-opt', type: 'button', 'data-sound': c.id, title: c.label, onclick: () => play(c.id),
@@ -2386,7 +2401,7 @@
             toast(err.message, 'error');
           }
         } }, '✕') : null)),
-      h('button', { class: 'sb-add', type: 'button', 'data-act': 'sound-add', disabled: full, title: full ? 'Limite de sons atingido: apague um para enviar outro' : 'Enviar um som seu (até 6 segundos, 200 KB: WAV, MP3 ou OGG)', onclick: () => {
+      h('button', { class: 'sb-add', type: 'button', 'data-act': 'sound-add', disabled: full, title: full ? 'Limite de sons atingido: apague um para enviar outro' : `Enviar um som seu (até ${lim.seconds} segundos, ${kb(lim.bytes)}: WAV, MP3 ou OGG)`, onclick: () => {
         close();
         openSoundUpload();
       } }, '＋ Adicionar som'));
@@ -2854,6 +2869,7 @@
       }
       case 'sounds':
         S.sounds = d.sounds || [];
+        preloadSounds();
         return;
       case 'live_react':
         return R.isValid(d.key) ? floatReaction(d.from, d.key) : undefined;
@@ -2894,6 +2910,10 @@
         return;
       case 'rtc':
         if (S.voice.client) S.voice.client.handleSignal(d.from, d.data);
+        return;
+      case 'ice':
+        // o host trocou os servidores da chamada (ex.: configurou um TURN): vale para as próximas conexões
+        if (Array.isArray(d.ice)) S.ice = d.ice;
         return;
       case 'error':
         S.voice.joining = null;
@@ -3217,7 +3237,9 @@
     if (v.client) leaveVoice({ silent: true, local: true });
     v.joining = null;
     v.channel = d.channel;
-    v.focus = null;
+    v.pins = new Set();
+    v.seenScreens = new Set();
+    v.pinAuto = true;
     v.lastIds = null;
     sfx('join');
     v.client = window.ConcordoVoice.createVoiceClient({
@@ -3236,6 +3258,7 @@
     const st = client.state();
     if (!st.hasMic) toast(st.micError || 'Sem microfone: você só vai ouvir.', 'error');
     pttApply();
+    preloadSounds();
     scheduleVoiceRender();
   }
 
@@ -3247,11 +3270,9 @@
     v.client = null;
     v.channel = null;
     v.joining = null;
-    v.focus = null;
-    for (const tile of v.tiles ? v.tiles.values() : []) {
-      const video = tile.querySelector('video');
-      if (video) video.srcObject = null;
-    }
+    v.pins = new Set();
+    v.seenScreens = new Set();
+    for (const tile of v.tiles ? v.tiles.values() : []) disposeTile(tile);
     v.tiles = new Map();
     if (!local) wsSend({ t: 'voice_leave' });
     if (!silent) toast('Você saiu da chamada.', 'ok');
@@ -3332,13 +3353,23 @@
     video.muted = true;
     tile = h('div', { class: 'tile', 'data-key': key, onclick: () => {
       if (tile._dragged) { tile._dragged = false; return; }
-      v.focus = v.focus === key ? null : key;
-      renderStage();
+      if (document.fullscreenElement === tile || !tile.classList.contains('pinnable')) return;
+      togglePin(key);
     } },
       video,
       h('div', { class: 'tile-avatar' }),
       h('div', { class: 'tile-label' }),
       h('div', { class: 'tile-tools' },
+        h('label', { class: 'tile-vol', title: 'Volume desta transmissão (só para você)', onclick: (e) => e.stopPropagation() },
+          ico('volume', 16),
+          h('input', { type: 'range', min: '0', max: '200', step: '5', value: '100', 'aria-label': 'Volume da transmissão', oninput: (e) => {
+            const id = tile.dataset.user;
+            if (id) setUserPref(id, { screen: Number(e.target.value) / 100 });
+          } })),
+        h('button', { class: 'tile-pin', title: 'Fixar no palco (dá para fixar mais de um)', 'aria-label': 'Fixar no palco', onclick: (e) => {
+          e.stopPropagation();
+          togglePin(key);
+        } }, ico('pin', 16)),
         h('button', { class: 'tile-fit', title: 'Preencher o quadro (pode cortar as bordas)', 'aria-label': 'Alternar entre tela inteira e preencher', onclick: (e) => {
           e.stopPropagation();
           tile.classList.toggle('fill');
@@ -3354,11 +3385,34 @@
         } }, ico('pip', 16)) : null,
         h('button', { class: 'tile-full', title: 'Tela cheia', 'aria-label': 'Tela cheia', onclick: (e) => {
           e.stopPropagation();
-          if (video.requestFullscreen) video.requestFullscreen().catch(() => {});
+          tileFullscreen(tile);
         } }, ico('maximize', 16))));
     enableZoom(tile, video);
     v.tiles.set(key, tile);
     return tile;
+  }
+
+  // Tela cheia do quadro inteiro (e não só do vídeo), para manter nome, zoom e botões.
+  function tileFullscreen(tile) {
+    if (document.fullscreenElement === tile) document.exitFullscreen().catch(() => {});
+    else if (tile.requestFullscreen) tile.requestFullscreen().catch(() => {});
+  }
+
+  // Fixar quadros no palco: os fixados ficam grandes e os outros viram miniaturas na faixa de baixo.
+  function togglePin(key) {
+    const v = S.voice;
+    if (!v.pins) v.pins = new Set();
+    if (v.pins.has(key)) v.pins.delete(key);
+    else v.pins.add(key);
+    v.pinAuto = false;
+    renderStage();
+  }
+
+  function disposeTile(tile) {
+    const video = tile.querySelector('video');
+    if (video) video.srcObject = null;
+    if (document.fullscreenElement === tile) document.exitFullscreen().catch(() => {});
+    if (tile._dispose) tile._dispose();
   }
 
   // Zoom (roda do mouse), mover (arrastar) e voltar ao normal (duplo clique) na tela compartilhada.
@@ -3420,9 +3474,12 @@
       if (e.target.closest('button') || view.s === 1) return;
       reset();
     });
-    document.addEventListener('fullscreenchange', reset);
-    window.addEventListener('resize', () => view.s > 1 && apply());
+    // estes dois ficam em document/window: saem junto com o quadro (ver disposeTile)
+    const off = new AbortController();
+    document.addEventListener('fullscreenchange', reset, { signal: off.signal });
+    window.addEventListener('resize', () => view.s > 1 && apply(), { signal: off.signal });
     tile._resetZoom = reset;
+    tile._dispose = () => off.abort();
   }
 
   function fillTile(tile, { id, kind, stream, conn, entry }) {
@@ -3435,7 +3492,20 @@
     if (stream && video.paused) video.play().catch(() => {});
     const av = tile.querySelector('.tile-avatar');
     av.hidden = !!stream;
-    if (!stream && !av.firstChild) av.append(avatar(id, nameOf(id), { big: true }));
+    if (!stream) {
+      // refaz o avatar quando a pessoa troca a foto, a cor ou o apelido durante a chamada
+      const u = S.users.get(id);
+      const sig = [nameOf(id), userColor(id), (u && u.avatar) || ''].join('|');
+      if (av._sig !== sig) {
+        av._sig = sig;
+        av.replaceChildren(avatar(id, nameOf(id), { big: true }));
+      }
+    }
+    const vol = tile.querySelector('.tile-vol input');
+    if (vol && document.activeElement !== vol) {
+      const saved = vprefs().users[id];
+      vol.value = String(Math.round((saved && saved.screen != null ? saved.screen : 1) * 100));
+    }
     tile.dataset.kind = kind;
     tile.dataset.user = id;
     tile.dataset.conn = conn;
@@ -3449,6 +3519,54 @@
       ...(kind === 'user' && voiceSpeaking(id) ? [eqEl()] : []),
       ...(kind === 'user' && !me ? [signalEl(id)].filter(Boolean) : []),
       document.createTextNode(conn === 'connecting' ? ' · conectando…' : conn === 'failed' ? ' · sem conexão' : ''));
+    tile.classList.toggle('mine', me);
+    tile.title = kind === 'user' && conn === 'failed' ? NO_ROUTE_HINT : '';
+  }
+
+  const NO_ROUTE_HINT = 'Sem conexão direta com esta pessoa. Costuma ser a rede de um dos dois (CGNAT ou firewall). Testar outra rede ou uma VPN pode resolver; a solução definitiva é o dono da sala configurar um servidor TURN.';
+
+  // Quem está só em áudio aparece como uma ficha pequena na faixa de baixo do palco.
+  function peopleChip({ id, conn, entry }) {
+    const me = id === S.session.user.id;
+    const speaking = voiceSpeaking(id);
+    return h('div', {
+      class: 'pchip' + (speaking ? ' speaking' : '') + (conn === 'failed' ? ' failed' : ''),
+      'data-user': id,
+      title: conn === 'failed' ? NO_ROUTE_HINT : conn === 'connecting' ? 'Conectando…' : '',
+    },
+      avatar(id, nameOf(id)),
+      h('span', { class: 'name' }, nameOf(id) + (me ? ' (você)' : '')),
+      entry && entry.deafened ? ico('headphones-off', 14) : entry && entry.muted ? ico('microphone-off', 14) : null,
+      speaking ? eqEl() : null,
+      me ? null : signalEl(id),
+      conn === 'connecting' ? h('span', { class: 'pchip-state' }, 'conectando…') : conn === 'failed' ? h('span', { class: 'pchip-state bad' }, 'sem conexão') : null);
+  }
+
+  const syncChildren = (parent, nodes) => {
+    const same = nodes.length === parent.children.length && nodes.every((n, i) => parent.children[i] === n);
+    if (!same) parent.replaceChildren(...nodes);
+  };
+
+  // Tamanho dos quadros do palco: a grade que deixa os quadros 16:9 com a maior área possível.
+  function layoutStage() {
+    const grid = S.ui.stageGrid;
+    if (!grid || !grid.isConnected) return;
+    const n = grid.children.length;
+    const g = window.ConcordoLayout.bestGrid(n, grid.clientWidth, grid.clientHeight, { gap: 10 });
+    grid.style.setProperty('--tile-w', g.w + 'px');
+    grid.style.setProperty('--tile-h', g.h + 'px');
+  }
+
+  function stageParts() {
+    const ui = S.ui;
+    if (!ui.stageGrid) {
+      ui.stageGrid = h('div', { class: 'stage-grid' });
+      ui.stageThumbs = h('div', { class: 'strip-thumbs' });
+      ui.stagePeople = h('div', { class: 'strip-people' });
+      ui.stageStrip = h('div', { class: 'stage-strip' }, ui.stageThumbs, ui.stagePeople);
+      if (typeof ResizeObserver !== 'undefined') new ResizeObserver(layoutStage).observe(ui.stageGrid);
+    }
+    return ui;
   }
 
   function renderStage() {
@@ -3475,13 +3593,14 @@
             disabled: v.joining || full ? true : null,
             onclick: () => joinVoice(ch.id),
           }, v.joining === ch.id ? 'Entrando…' : full ? 'Sala cheia' : 'Entrar na chamada'),
-          h('p', { class: 'hint small' }, 'Voz e vídeo vão direto entre os computadores. Até 8 pessoas; fica melhor com poucas.')));
+          h('p', { class: 'hint small' }, `Voz e vídeo vão direto entre os computadores. Até ${(S.limits && S.limits.maxVoice) || 8} pessoas; fica melhor com poucas.`)));
       return;
     }
 
     const me = S.session.user.id;
     const st = v.client.state();
     const entries = voiceMembers(ch.id);
+    if (!v.tiles) v.tiles = new Map();
     const wanted = [];
     for (const p of entries) {
       const mine = p.id === me;
@@ -3489,24 +3608,57 @@
       wanted.push({ key: p.id + ':user', id: p.id, kind: 'user', stream: info.cam || null, conn: info.conn, entry: p });
       if (info.screen) wanted.push({ key: p.id + ':screen', id: p.id, kind: 'screen', stream: info.screen, conn: info.conn, entry: p });
     }
-    if (v.focus && !wanted.some((w) => w.key === v.focus)) v.focus = null;
-    const nodes = wanted.map((w) => {
-      const tile = tileFor(w.key);
-      fillTile(tile, w);
-      tile.classList.toggle('focused', v.focus === w.key);
-      return tile;
-    });
     for (const key of [...v.tiles.keys()]) {
       if (!wanted.some((w) => w.key === key)) {
-        const gone = v.tiles.get(key);
-        const video = gone.querySelector('video');
-        if (video) video.srcObject = null;
+        disposeTile(v.tiles.get(key));
         v.tiles.delete(key);
       }
     }
-    stage.className = 'stage live' + (v.focus ? ' has-focus' : '') + ' n' + Math.min(nodes.length, 9);
-    const same = nodes.length === stage.children.length && nodes.every((n, i) => stage.children[i] === n);
-    if (!same) stage.replaceChildren(...nodes);
+
+    // Palco: só quem tem vídeo (telas e câmeras). Quem está só em áudio vai para a faixa.
+    // Sem nenhum vídeo, o palco mostra os avatares grandes de todos.
+    const videos = wanted.filter((w) => w.stream);
+    if (!v.pins) v.pins = new Set();
+    if (!v.seenScreens) v.seenScreens = new Set();
+    for (const key of [...v.pins]) if (!videos.some((w) => w.key === key)) v.pins.delete(key);
+    if (!v.pins.size) v.pinAuto = true;
+    // destaque automático: tela nova de outra pessoa é fixada sozinha, a menos que você já tenha escolhido o que fixar
+    for (const w of videos) {
+      if (w.kind !== 'screen' || v.seenScreens.has(w.key)) continue;
+      v.seenScreens.add(w.key);
+      if (w.id !== me && v.pinAuto && videos.length > 1) v.pins.add(w.key);
+    }
+    for (const key of [...v.seenScreens]) if (!videos.some((w) => w.key === key)) v.seenScreens.delete(key);
+
+    const pinned = videos.filter((w) => v.pins.has(w.key));
+    const main = !videos.length ? wanted : pinned.length ? pinned : videos;
+    const thumbs = pinned.length ? videos.filter((w) => !v.pins.has(w.key)) : [];
+    const audioOnly = videos.length ? wanted.filter((w) => w.kind === 'user' && !w.stream) : [];
+
+    const place = (w, thumb) => {
+      const tile = tileFor(w.key);
+      fillTile(tile, w);
+      tile.classList.toggle('thumb', thumb);
+      tile.classList.toggle('pinned', v.pins.has(w.key));
+      tile.classList.toggle('pinnable', !!w.stream);
+      if (thumb && tile._resetZoom) tile._resetZoom();
+      return tile;
+    };
+    const ui = stageParts();
+    const mainNodes = main.map((w) => place(w, false));
+    const thumbNodes = thumbs.map((w) => place(w, true));
+    stage.className = 'stage live';
+    syncChildren(stage, [ui.stageGrid, ui.stageStrip]);
+    syncChildren(ui.stageGrid, mainNodes);
+    ui.stageStrip.hidden = !(thumbNodes.length || audioOnly.length);
+    // as miniaturas são os próprios quadros, movidos de lugar; as fichas são refeitas a cada vez
+    syncChildren(ui.stageThumbs, thumbNodes);
+    ui.stagePeople.replaceChildren(...audioOnly.map(peopleChip));
+    for (const tile of [...mainNodes, ...thumbNodes]) {
+      const video = tile.querySelector('video');
+      if (video.srcObject && video.paused) video.play().catch(() => {});
+    }
+    layoutStage();
   }
 
   // ---------- preferências de áudio/vídeo e menu de contexto ----------
@@ -3587,15 +3739,17 @@
     }
     if (tile) {
       const v = tile.querySelector('video');
-      items.push(h('button', { class: 'ctx-btn', onclick: () => {
-        S.voice.focus = S.voice.focus === tile.dataset.key ? null : tile.dataset.key;
-        closeContextMenu();
-        renderStage();
-      } }, S.voice.focus === tile.dataset.key ? 'Remover destaque' : 'Destacar'));
-      if (v && !v.hidden) items.push(h('button', { class: 'ctx-btn', onclick: () => {
-        closeContextMenu();
-        v.requestFullscreen && v.requestFullscreen().catch(() => {});
-      } }, 'Tela cheia'));
+      const pinned = !!(S.voice.pins && S.voice.pins.has(tile.dataset.key));
+      if (v && !v.hidden) {
+        items.push(h('button', { class: 'ctx-btn', onclick: () => {
+          closeContextMenu();
+          togglePin(tile.dataset.key);
+        } }, pinned ? 'Desafixar do palco' : 'Fixar no palco'));
+        items.push(h('button', { class: 'ctx-btn', onclick: () => {
+          closeContextMenu();
+          tileFullscreen(tile);
+        } }, 'Tela cheia'));
+      }
     }
     const menu = h('div', { class: 'ctx-menu', 'data-user': id }, items);
     document.body.append(menu);
@@ -3803,6 +3957,106 @@
     return wrap;
   }
 
+  // Teste de rede da chamada: junta os candidatos de conexão e diz o que este computador consegue.
+  async function testCallNetwork(ice) {
+    const pc = new RTCPeerConnection({ iceServers: ice });
+    const found = [];
+    try {
+      pc.createDataChannel('teste');
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 7000);
+        pc.onicecandidate = (e) => {
+          if (e.candidate) return void found.push(e.candidate);
+          clearTimeout(timer);
+          resolve();
+        };
+        pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(resolve);
+      });
+    } finally {
+      pc.close();
+    }
+    const srflx = found.filter((c) => c.type === 'srflx');
+    // o mesmo ponto de saída com portas públicas diferentes por servidor = NAT simétrico (não aceita conexão direta)
+    const ports = new Map();
+    for (const c of srflx) {
+      const key = c.relatedAddress + ':' + c.relatedPort + '/' + c.protocol;
+      if (!ports.has(key)) ports.set(key, new Set());
+      ports.get(key).add(c.port);
+    }
+    return {
+      direct: srflx.length > 0,
+      symmetric: [...ports.values()].some((set) => set.size > 1),
+      relay: found.some((c) => c.type === 'relay'),
+      hasTurn: ice.some((s) => [].concat(s.urls || []).some((u) => /^turns?:/i.test(u))),
+    };
+  }
+
+  function networkSection() {
+    const out = h('p', { class: 'hint', 'data-role': 'net-result' }, 'O teste mostra se este computador consegue conexão direta com os amigos e se o TURN da sala responde.');
+    const run = h('button', { class: 'btn small', type: 'button', 'data-act': 'net-test', onclick: async () => {
+      run.disabled = true;
+      out.className = 'hint';
+      out.textContent = 'Testando… (alguns segundos)';
+      try {
+        const ice = S.ice && S.ice.length ? S.ice : [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }];
+        const t = await testCallNetwork(ice);
+        const lines = [];
+        if (!t.direct) lines.push('Conexão direta: sem resposta. Um firewall ou a rede está bloqueando; a chamada só funciona por um servidor TURN.');
+        else if (t.symmetric) lines.push('Conexão direta: rede restritiva (NAT simétrico, comum em CGNAT e 4G). Pode falhar com alguns amigos; um servidor TURN resolve.');
+        else lines.push('Conexão direta: possível.');
+        if (t.hasTurn) lines.push(t.relay ? 'TURN da sala: funcionando.' : 'TURN da sala: não respondeu. Peça ao dono para conferir endereço, usuário e senha.');
+        else lines.push('TURN: a sala não tem um configurado.');
+        out.className = 'hint' + ((!t.direct || t.symmetric) && !t.relay ? ' error' : '');
+        out.textContent = lines.join(' ');
+      } catch {
+        out.className = 'hint error';
+        out.textContent = 'Não consegui rodar o teste neste computador.';
+      }
+      run.disabled = false;
+    } }, 'Testar conexão');
+    const parts = [h('h4', { class: 'sub' }, 'Rede da chamada'), h('div', { class: 'row' }, run), out];
+    if (!bridge.getTurn) return parts;
+
+    // TURN: só o host configura; a lista chega sozinha para quem está na sala
+    const urls = h('input', { class: 'input', placeholder: 'turn:servidor.exemplo.com:3478', 'data-role': 'turn-urls', spellcheck: 'false' });
+    const user = h('input', { class: 'input', placeholder: 'Usuário', 'data-role': 'turn-user', spellcheck: 'false', autocomplete: 'off' });
+    const pass = h('input', { class: 'input', type: 'password', placeholder: 'Senha', 'data-role': 'turn-pass', autocomplete: 'new-password' });
+    const state = h('p', { class: 'hint', 'data-role': 'turn-state' });
+    const clear = h('button', { class: 'btn small', type: 'button', hidden: true }, 'Remover');
+    const show = (c) => {
+      urls.value = c.urls;
+      user.value = c.username;
+      pass.value = '';
+      pass.placeholder = c.hasCredential ? 'Senha (salva; deixe em branco para manter)' : 'Senha';
+      clear.hidden = !c.urls;
+      if (c.env) state.textContent = 'A variável CONCORDO_ICE_SERVERS está definida e tem prioridade sobre o que for salvo aqui.';
+    };
+    bridge.getTurn().then(show).catch(() => {});
+    const save = h('button', { class: 'btn small primary', type: 'button', 'data-act': 'turn-save', onclick: async () => {
+      try {
+        show(await bridge.setTurn({ urls: urls.value, username: user.value, credential: pass.value }));
+        state.className = 'hint';
+        state.textContent = 'Salvo. Quem está na sala já recebeu; vale para as próximas conexões da chamada.';
+      } catch (e) {
+        state.className = 'hint error';
+        state.textContent = String(e.message || e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      }
+    } }, 'Salvar');
+    clear.addEventListener('click', async () => {
+      show(await bridge.clearTurn());
+      state.className = 'hint';
+      state.textContent = 'TURN removido. A chamada volta a usar só conexão direta.';
+    });
+    const box = h('details', { class: 'turn-box' },
+      h('summary', null, 'Servidor TURN (para quem hospeda a sala)'),
+      h('p', { class: 'hint' }, 'Se um amigo entra na sala mas não conecta na chamada, a rede dele não aceita conexão direta. Um servidor TURN repassa a voz e o vídeo dele. Só quem hospeda precisa configurar, e exige uma conta num serviço de TURN (ou um servidor seu). Tudo o que esse amigo envia e recebe passa por esse serviço.'),
+      h('div', { class: 'field' }, h('label', null, 'Endereço'), urls),
+      h('div', { class: 'field' }, h('label', null, 'Usuário e senha'), h('div', { class: 'row' }, user, pass)),
+      h('div', { class: 'row' }, save, clear),
+      state);
+    return [...parts, box];
+  }
+
   async function openVoiceSettings() {
     let devices = [];
     try {
@@ -3964,6 +4218,7 @@
       h('h4', { class: 'sub' }, 'Compartilhamento de tela: qualidade'),
       ...qualityFields('screen'),
       h('p', { class: 'hint' }, 'Mais resolução, quadros e dados pedem mais da sua internet de envio, que é dividida entre todos que assistem. Na dúvida, deixe a taxa em Automática.'),
+      ...networkSection(),
       h('div', { class: 'row' },
         h('button', { class: 'btn small', 'data-act': 'diag', onclick: async () => {
           const c = S.voice.client;
@@ -4302,6 +4557,7 @@
             class: 'btn small',
             onclick: () => {
               if (S.isHost && !confirm('Atualizar agora encerra a sala e desconecta todo mundo. Continuar?')) return;
+              if (!S.isHost && S.voice.client && !confirm('Você está numa chamada. Atualizar agora tira você dela. Continuar?')) return;
               bridge.installUpdate();
             },
           }, 'Reiniciar e atualizar')),

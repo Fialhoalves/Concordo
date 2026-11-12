@@ -99,9 +99,9 @@
     },
   };
 
-  // sons enviados pelo pessoal da sala: baixa uma vez, decodifica e guarda; toca no máximo 6 s
+  // sons enviados pelo pessoal da sala: baixa uma vez, decodifica e guarda; toca no máximo 20 s
   const custom = new Map();
-  const MAX_SECONDS = 6;
+  const MAX_SECONDS = 20;
   async function playCustom(id, load) {
     if (!enabled()) return;
     try {
@@ -126,6 +126,18 @@
     return buf.duration;
   }
   const forget = (id) => custom.delete(id);
+  // baixa e decodifica antes da hora, para o som tocar sem atraso na primeira vez
+  function preload(id, load) {
+    if (custom.has(id)) return;
+    try {
+      audio();
+      const p = load().then((bytes) => ctx.decodeAudioData(bytes));
+      custom.set(id, p);
+      p.catch(() => custom.delete(id));
+    } catch {
+      /* sem áudio disponível */
+    }
+  }
 
   function play(id) {
     const clip = CLIPS[id];
@@ -142,5 +154,5 @@
     }
   }
 
-  window.ConcordoSoundboard = { play, playCustom, inspect, forget, MAX_SECONDS, ids: Object.keys(CLIPS) };
+  window.ConcordoSoundboard = { play, playCustom, preload, inspect, forget, MAX_SECONDS, ids: Object.keys(CLIPS) };
 })();

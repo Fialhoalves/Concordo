@@ -119,11 +119,17 @@ Os princípios que guiam o projeto:
 
 1. Clique num canal de voz e em **Entrar na chamada** (o dono cria canais em **+ → Voz e vídeo**).
 2. Na barra da chamada: silenciar, ensurdecer, câmera, compartilhar tela, reagir, soundboard e sair.
-3. Clique num vídeo para destacá-lo. Na tela compartilhada, a roda do mouse dá zoom e arrastar move a imagem.
-4. **Botão direito** no nome de alguém abre o volume da voz (0 a 200%), o volume da tela e *Silenciar para mim*.
-5. O ⚙ ao lado do seu nome escolhe microfone, saída de som e câmera, cancelamento de eco e ruído, **apertar para falar** e a
-   qualidade da transmissão (separada para câmera e tela).
-6. Ao compartilhar a tela, o som do computador é opcional e desligado por padrão, porque inclui a voz dos amigos (use fones se ligar).
+3. O palco mostra só quem tem vídeo (telas e câmeras), no maior tamanho que cabe em 16:9. Quem está só em áudio aparece numa
+   faixa embaixo, com o indicador de quem está falando.
+4. Clique num vídeo para **fixá-lo** no palco; dá para fixar mais de um e ver duas telas grandes ao mesmo tempo. Os outros vídeos
+   viram miniaturas na faixa. Uma tela nova de outra pessoa é fixada sozinha, até você escolher o que fixar.
+5. Na tela compartilhada, a roda do mouse dá zoom e arrastar move a imagem. Os botões do quadro ajustam o volume da transmissão
+   e abrem a tela cheia (que mantém o nome, o zoom e os botões) ou a janela flutuante.
+6. **Botão direito** no nome de alguém abre o volume da voz (0 a 200%), o volume da tela e *Silenciar para mim*.
+7. O ⚙ ao lado do seu nome escolhe microfone, saída de som e câmera, cancelamento de eco e ruído, **apertar para falar** e a
+   qualidade da transmissão (separada para câmera e tela). Lá também fica o **Testar conexão**, que diz se a sua rede aceita
+   conexão direta e se o TURN da sala responde.
+8. Ao compartilhar a tela, o som do computador é opcional e desligado por padrão, porque inclui a voz dos amigos (use fones se ligar).
 
 Atalhos globais (opcionais, em Configurações): **Ctrl+Shift+M** muta e **Ctrl+Shift+D** ensurdece mesmo com outro programa em foco.
 
@@ -133,8 +139,8 @@ Atalhos globais (opcionais, em Configurações): **Ctrl+Shift+M** muta e **Ctrl+
 <summary><b>Soundboard e sons da sala</b></summary>
 
 Na chamada, o botão de alto-falante toca um som para todo mundo. Os sons prontos são sintetizados em cada computador (só o
-nome do som viaja pela rede). Com **＋ Adicionar som** você envia um WAV, MP3 ou OGG de até 6 segundos e 200 KB para a sala
-(3 por pessoa, 12 por sala). Quem enviou, o dono ou um moderador pode apagar.
+nome do som viaja pela rede). Com **＋ Adicionar som** você envia um WAV, MP3 ou OGG de até 20 segundos e 1 MB para a sala
+(8 por pessoa, 40 por sala). Os sons da sala são baixados ao entrar na chamada, para tocar sem atraso. Quem enviou, o dono ou um moderador pode apagar.
 
 </details>
 
@@ -254,8 +260,16 @@ Com isso o convite nunca muda. Se a porta 47800 estiver ocupada, troque no próp
 <details>
 <summary><b>Servidor TURN (para redes restritivas)</b></summary>
 
-Por padrão o Concordo usa servidores STUN públicos para os computadores se acharem. Se alguém não conseguir entrar na chamada,
-o host pode iniciar o app com um TURN próprio (ex.: coturn), definindo antes `CONCORDO_ICE_SERVERS` com uma lista JSON:
+Por padrão o Concordo usa servidores STUN públicos para os computadores se acharem. Se alguém entra na sala mas não conecta na
+chamada, a rede dessa pessoa (CGNAT, 4G, firewall) não aceita conexão direta, e só um servidor TURN resolve. O **Testar conexão**
+(no ⚙) mostra se é o caso.
+
+Só quem hospeda configura: no ⚙, em **Rede da chamada → Servidor TURN**, informe o endereço (`turn:servidor:3478`), o usuário e a
+senha. A senha fica cifrada no seu computador, a lista chega sozinha a quem está na sala e vale para as salas hospedadas nesse PC.
+Um TURN exige uma conta num serviço (ou um servidor seu, como o coturn); confira os limites gratuitos do serviço antes de escolher.
+Tudo o que a pessoa sem conexão direta envia e recebe passa por ele, e tela compartilhada gasta bem mais que voz.
+
+Também dá para definir a lista inteira pela variável `CONCORDO_ICE_SERVERS` (tem prioridade sobre o que foi salvo na interface):
 
 ```powershell
 $env:CONCORDO_ICE_SERVERS='[{"urls":"turn:meu-servidor:3478","username":"usuario","credential":"senha"}]'
@@ -286,7 +300,7 @@ indicador no canto da barra lateral mostra o uso de internet e de disco (estimat
 | Voz e vídeo | WebRTC em malha, STUN público e TURN opcional |
 | Criptografia | WebCrypto: Ed25519 (assinaturas), X25519 + HKDF + AES-GCM (mensagens diretas), chaves não exportáveis no IndexedDB |
 | Distribuição | GitHub Releases, com workflow que testa, empacota e publica |
-| Testes | `node:test` (servidor, segurança, enquetes, mesclagem de cópias) e roteiros ponta a ponta com Playwright |
+| Testes | `node:test` (servidor, segurança, enquetes, mesclagem de cópias) |
 
 ## Estrutura do código
 
@@ -294,7 +308,7 @@ indicador no canto da barra lateral mostra o uso de internet e de disco (estimat
 src/main/       processo principal do Electron: janela, túnel, bandeja, atualização, cópias e ponto de encontro
 src/server/     servidor de sala: HTTP, WebSocket, persistência, mesclagem de cópias
 src/renderer/   interface (HTML/CSS/JS puro); voice.js (WebRTC), keys.js (criptografia), soundboard.js, meter.js
-src/shared/     código usado pelos dois lados: convite, assinaturas, reações, lista de sons
+src/shared/     código usado pelos dois lados: convite, assinaturas, reações, lista de sons, grade do palco
 test/           testes automatizados
 docs/           página de apresentação (GitHub Pages)
 ```
@@ -322,12 +336,12 @@ mascote ficam em `src/renderer/assets/`.
 O workflow `.github/workflows/release.yml` vê que a tag ainda não existe, roda os testes, gera o instalador do Windows e cria a
 Release com `Concordo-Setup-X.Y.Z.exe`, `.blockmap` e `latest.yml`. Commits que não mudam a versão não geram Release. Quem já
 tem o app recebe a atualização sozinho: ele confere ao abrir, baixa em segundo plano e mostra **Reiniciar e atualizar**.
-Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirmação).
+Se o host atualizar com a sala aberta, a sala é encerrada (o app pede confirmação); quem está numa chamada também é avisado antes.
+Os testes rodam em todo push e pull request (`.github/workflows/ci.yml`).
 
 ## Ideias para o futuro
 
 - Pontos de encontro de reserva, para o endereço da sala não depender de um serviço só
-- Não atualizar automaticamente durante uma chamada
 - Exportar e restaurar uma sala
 - Arquivos nas mensagens diretas
 - Ícone e faixa da sala, emojis personalizados

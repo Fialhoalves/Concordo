@@ -90,6 +90,32 @@ test('sala nova tem um canal de texto e um de voz; o estado traz ICE e limite de
   assert.equal(st.limits.maxVoice, 8);
 });
 
+test('a lista de ICE pode ser uma função e a troca é avisada a quem está conectado', async () => {
+  const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'concordo-ice-'));
+  let list = null; // sem lista: cai nos servidores padrão
+  const s2 = await createConcordoServer({ dataDir: d2, roomName: 'Ice', ownerName: 'Host', iceServers: () => list });
+  try {
+    const state = async () => (await (await fetch(s2.localUrl + '/api/state', { headers: { Authorization: 'Bearer ' + s2.owner.token } })).json()).ice;
+    assert.ok((await state()).every((s) => String(s.urls).startsWith('stun:')));
+    const ws = await new Promise((resolve, reject) => {
+      const w = new WebSocket('ws://127.0.0.1:' + s2.port + '/ws?token=' + s2.owner.token);
+      w.events = [];
+      w.on('message', (d) => w.events.push(JSON.parse(d.toString())));
+      w.on('open', () => resolve(w));
+      w.on('error', reject);
+    });
+    list = [{ urls: 'stun:a.test:3478' }, { urls: ['turn:t.test:3478'], username: 'u', credential: 'p' }];
+    s2.announceIce();
+    const ev = await waitFor(() => last(ws, 'ice'));
+    assert.deepEqual(ev.ice, list);
+    assert.deepEqual(await state(), list);
+    ws.close();
+  } finally {
+    await s2.close();
+    fs.rmSync(d2, { recursive: true, force: true });
+  }
+});
+
 test('salas antigas (sem tipo de canal) são migradas, sem colidir ids', async () => {
   const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'concordo-legacy-'));
   try {

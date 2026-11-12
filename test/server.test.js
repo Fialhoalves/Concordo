@@ -242,6 +242,17 @@ test('upload e download de arquivo, com tipo seguro', async () => {
     assert.match(down.headers.get('content-disposition'), /^attachment;/);
     assert.equal(down.headers.get('x-content-type-options'), 'nosniff');
 
+    // Range: devolve só o trecho pedido (o player de vídeo/áudio usa para avançar)
+    const fileUrl = `${srv.localUrl}/api/files/${att.id}?token=${member.token}`;
+    const part = await fetch(fileUrl, { headers: { Range: 'bytes=4-9' } });
+    assert.equal(part.status, 206);
+    assert.equal(part.headers.get('content-range'), `bytes 4-9/${payload.length}`);
+    assert.deepEqual(Buffer.from(await part.arrayBuffer()), payload.subarray(4, 10));
+    const tail = await fetch(fileUrl, { headers: { Range: 'bytes=-5' } });
+    assert.equal(tail.status, 206);
+    assert.deepEqual(Buffer.from(await tail.arrayBuffer()), payload.subarray(payload.length - 5));
+    assert.equal((await fetch(fileUrl, { headers: { Range: `bytes=${payload.length}-` } })).status, 416);
+
     // HTML enviado nunca é servido como HTML
     const html = await call(member.token, 'POST', '/api/channels/geral/upload?name=evil.html', Buffer.from('<script>alert(1)</script>'));
     const dh = await fetch(`${srv.localUrl}/api/files/${html.json.message.attachments[0].id}?token=${member.token}`);
